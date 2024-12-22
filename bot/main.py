@@ -7,7 +7,6 @@ import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
-
 # --- Initialization ---
 
 logging.basicConfig(
@@ -28,13 +27,12 @@ ROLE_IDS = [
     int(os.getenv("ROLE_ID_2"))
 ]
 
-
 intents = disnake.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True  # Make sure you have the members intent enabled
 
 bot = commands.Bot(command_prefix="/", intents=intents)
-
 
 # --- Helper Functions ---
 
@@ -44,8 +42,9 @@ async def get_roles_by_ids(guild: disnake.Guild, role_ids: list[int]) -> list[di
         role = guild.get_role(role_id)
         if role:
             roles.append(role)
+        else:
+            logger.error(f"Role with ID {role_id} not found in guild {guild.name}")
     return roles
-
 
 # --- Event Listeners ---
 
@@ -70,10 +69,11 @@ async def on_member_join(member: disnake.Member):
         welcome_channel = bot.get_channel(WELCOME_CHANNEL_ID)
         if welcome_channel:
             await welcome_channel.send(f"Welcome to the server, {member.mention}!")
+        else:
+            logger.error(f"Welcome channel with ID {WELCOME_CHANNEL_ID} not found")
 
     except Exception as e:
-        logger.error(f"Error in on_member_join: {e}")
-
+        logger.error(f"Error in on_member_join: {e}", exc_info=True)  # Log with traceback
 
 @bot.event
 async def on_member_remove(member: disnake.Member):
@@ -85,9 +85,10 @@ async def on_member_remove(member: disnake.Member):
         goodbye_channel = bot.get_channel(GOODBYE_CHANNEL_ID)
         if goodbye_channel:
             await goodbye_channel.send(f"{member.name} has left the server.")
+        else:
+            logger.error(f"Goodbye channel with ID {GOODBYE_CHANNEL_ID} not found")
 
     except Exception as e:
-        logger.error(f"Error in on_member_remove: {e}")
-
+        logger.error(f"Error in on_member_remove: {e}", exc_info=True)
 
 bot.run(DISCORD_BOT_TOKEN)
