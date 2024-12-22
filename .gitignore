@@ -1,0 +1,4 @@
+# .idx/
+.venv/
+# .vscode/
+# .env
