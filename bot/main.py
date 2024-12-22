@@ -7,6 +7,7 @@ import disnake
 from disnake.ext import commands
 from dotenv import load_dotenv
 
+
 # --- Initialization ---
 
 logging.basicConfig(
@@ -34,6 +35,7 @@ intents.members = True  # Make sure you have the members intent enabled
 
 bot = commands.Bot(command_prefix="/", intents=intents)
 
+
 # --- Helper Functions ---
 
 async def get_roles_by_ids(guild: disnake.Guild, role_ids: list[int]) -> list[disnake.Role]:
@@ -45,6 +47,7 @@ async def get_roles_by_ids(guild: disnake.Guild, role_ids: list[int]) -> list[di
         else:
             logger.error(f"Role with ID {role_id} not found in guild {guild.name}")
     return roles
+
 
 # --- Event Listeners ---
 
