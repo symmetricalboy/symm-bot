@@ -1,1 +1,1 @@
-# discord-taskmaster-bot
+# symm-bot
