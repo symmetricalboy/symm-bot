@@ -58,17 +58,50 @@ async def update_member_count_channel(guild: disnake.Guild):
         if not channel:
             logger.error(f"Member count channel with ID {MEMBER_COUNT_CHANNEL_ID} not found")
             return
+        
+        # Force a guild fetch to get the most up-to-date member count
+        try:
+            # This ensures we have the latest data from Discord
+            updated_guild = await bot.fetch_guild(guild.id, with_counts=True)
+            member_count = updated_guild.approximate_member_count
+            logger.info(f"Fetched updated member count: {member_count} for guild {guild.name}")
+        except Exception as e:
+            # Fallback to cached count if fetch fails
+            logger.warning(f"Could not fetch updated guild info: {e}, using cached count")
+            member_count = guild.member_count
             
         # Format: "Members: 123"
-        new_name = f"Members: {guild.member_count}"
+        new_name = f"Members: {member_count}"
         
         # Only update if the name has changed to avoid API rate limits
         if channel.name != new_name:
             await channel.edit(name=new_name)
             logger.info(f"Updated member count channel to '{new_name}'")
+        else:
+            logger.info(f"Channel name already up to date: {new_name}")
             
     except Exception as e:
         logger.error(f"Error updating member count channel: {e}", exc_info=True)
+
+
+# --- Commands ---
+
+@bot.slash_command(
+    name="update_member_count",
+    description="Manually updates the member count channel"
+)
+@commands.has_permissions(administrator=True)  # Only administrators can use this command
+async def update_member_count(inter: disnake.ApplicationCommandInteraction):
+    """Manually updates the member count channel."""
+    await inter.response.defer(ephemeral=True)  # Defer the response to avoid timeout
+    
+    try:
+        guild = inter.guild
+        await update_member_count_channel(guild)
+        await inter.followup.send("Member count channel has been updated!", ephemeral=True)
+    except Exception as e:
+        logger.error(f"Error in update_member_count command: {e}", exc_info=True)
+        await inter.followup.send(f"Error updating member count: {str(e)}", ephemeral=True)
 
 
 # --- Event Listeners ---
@@ -128,13 +161,19 @@ async def on_member_remove(member: disnake.Member):
     """
     try:
         guild = member.guild
+        logger.info(f"Member removed: {member.name} (ID: {member.id}) from {guild.name}")
+        
         goodbye_channel = bot.get_channel(GOODBYE_CHANNEL_ID)
         if goodbye_channel:
             await goodbye_channel.send(f"{member.name} has left the server.")
         else:
             logger.error(f"Goodbye channel with ID {GOODBYE_CHANNEL_ID} not found")
-            
+        
+        # Add a small delay to ensure Discord's API has processed the member removal
+        await asyncio.sleep(1)
+        
         # Update member count when a member leaves
+        logger.info(f"Updating member count after {member.name} left")
         await update_member_count_channel(guild)
 
     except Exception as e:
