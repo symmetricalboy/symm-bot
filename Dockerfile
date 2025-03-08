@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot/ .
+# Copy the entire project
+COPY . .
 
-CMD ["python", "main.py"]
+# Run using the new entry point
+CMD ["python", "run.py"]

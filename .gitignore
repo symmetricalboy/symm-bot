@@ -1,4 +1,4 @@
-# .idx/
+.idx/
+.vscode/
 .venv/
-# .vscode/
-# .env
+.env
