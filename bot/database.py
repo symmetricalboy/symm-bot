@@ -199,6 +199,11 @@ async def cleanup_db():
 # Database operations
 async def init_db():
     """Initialize the database by creating all tables."""
+    # If no database URL is provided, log a warning and continue
+    if not ASYNC_DATABASE_URL:
+        logger.warning("No DATABASE_URL provided, skipping database initialization")
+        return
+    
     try:
         # Create a standalone connection for initialization to avoid loop conflicts
         async with engine.begin() as conn:
@@ -230,13 +235,15 @@ async def init_db():
                 )
                 """))
                 logger.info("Created server_configs table manually")
-            
-    except SQLAlchemyError as e:
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
         logger.error(f"Database initialization failed: {e}")
         # Print out more detailed error information
         logger.error(f"Database URL: {ASYNC_DATABASE_URL.replace(DATABASE_URL.split('@')[0], '***')}")
         logger.error(f"Tables to create: {[table.name for table in Base.metadata.tables.values()]}")
-        raise
+        logger.warning("Continuing without database connection")
+    except Exception as e:
+        logger.error(f"Unexpected error during database initialization: {e}")
+        logger.warning("Continuing without database connection")
 
 
 async def create_role_menu(
@@ -411,6 +418,11 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
     Returns:
         Dictionary with server configuration, or None if not found
     """
+    # If no database URL is provided, return None
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, returning None for server config")
+        return None
+        
     # Create a fresh session specifically for this operation
     session = None
     try:
@@ -453,7 +465,7 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
             "new_user_role_ids": config.new_user_role_ids if config.new_user_role_ids else [],
             "bot_role_ids": config.bot_role_ids if config.bot_role_ids else []
         }
-    except SQLAlchemyError as e:
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
         logger.error(f"Database error getting server config: {e}")
         return None
     except Exception as e:

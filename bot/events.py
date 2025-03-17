@@ -77,7 +77,7 @@ async def on_member_join(member: disnake.Member):
             logger.error(f"Error getting server config in on_member_join: {e}")
             # Continue with defaults
         
-        # Get role IDs from database or fall back to environment variables
+        # Get role IDs from database
         new_user_role_ids = []
         bot_role_ids = []
         notifications_channel_id = None
@@ -87,17 +87,6 @@ async def on_member_join(member: disnake.Member):
             notifications_channel_id = server_config.get("notifications_channel_id")
             new_user_role_ids = server_config.get("new_user_role_ids", [])
             bot_role_ids = server_config.get("bot_role_ids", [])
-        else:
-            # Fall back to environment variables
-            from .config import NOTIFICATIONS_CHANNEL_ID, ROLE_USER, ROLE_NEW_ARRIVAL, ROLE_BOT
-            notifications_channel_id = NOTIFICATIONS_CHANNEL_ID
-            
-            if ROLE_USER:
-                new_user_role_ids.append(ROLE_USER)
-            if ROLE_NEW_ARRIVAL:
-                new_user_role_ids.append(ROLE_NEW_ARRIVAL)
-            if ROLE_BOT:
-                bot_role_ids.append(ROLE_BOT)
         
         if member.bot:
             # Handle bot joins
@@ -184,11 +173,6 @@ async def on_member_remove(member: disnake.Member):
         except Exception as e:
             logger.error(f"Error getting server config in on_member_remove: {e}")
             # Continue with default
-            
-        # If no config or no channel ID in config, fall back to environment variable
-        if not notifications_channel_id:
-            from .config import NOTIFICATIONS_CHANNEL_ID
-            notifications_channel_id = NOTIFICATIONS_CHANNEL_ID
         
         # Send goodbye message
         if notifications_channel_id:

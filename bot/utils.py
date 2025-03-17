@@ -150,16 +150,8 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
                 member_count_channel_id = server_config.get("member_count_channel_id")
         except Exception as db_error:
             logger.error(f"Error getting server config for guild {guild.id}: {db_error}")
-            # Fallback to environment variable
-            from .config import MEMBER_COUNT_CHANNEL_ID
-            member_count_channel_id = MEMBER_COUNT_CHANNEL_ID
         
-        # If still not found, fallback to environment variable
-        if not member_count_channel_id:
-            from .config import MEMBER_COUNT_CHANNEL_ID
-            member_count_channel_id = MEMBER_COUNT_CHANNEL_ID
-            
-        # If we still don't have a channel ID, log and return
+        # If we don't have a channel ID, log and return
         if not member_count_channel_id:
             logger.debug(f"No member count channel configured for guild {guild.name}")
             return

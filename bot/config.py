@@ -17,22 +17,21 @@ load_dotenv()
 # Bot configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
-# Combine welcome and goodbye channel IDs into a single notifications channel
-NOTIFICATIONS_CHANNEL_ID = int(os.getenv("NOTIFICATIONS_CHANNEL_ID", 
-                                      os.getenv("WELCOME_CHANNEL_ID", 
-                                              os.getenv("GOODBYE_CHANNEL_ID", 0))))
-# For backward compatibility
-WELCOME_CHANNEL_ID = NOTIFICATIONS_CHANNEL_ID
-GOODBYE_CHANNEL_ID = NOTIFICATIONS_CHANNEL_ID
-MEMBER_COUNT_CHANNEL_ID = int(os.getenv("MEMBER_COUNT_CHANNEL_ID"))
 
-# Role IDs
-ROLE_USER = int(os.getenv("ROLE_USER", os.getenv("ROLE_ID_1", 0)))  # Fallback to ROLE_ID_1 for compatibility
-ROLE_NEW_ARRIVAL = int(os.getenv("ROLE_NEW_ARRIVAL", os.getenv("ROLE_ID_2", 0)))  # Fallback to ROLE_ID_2 for compatibility
-ROLE_BOT = int(os.getenv("ROLE_BOT", 0))  # New role for bots
+# These values are now stored in the database on a per-guild basis
+# Setting them to None or 0 as defaults
+NOTIFICATIONS_CHANNEL_ID = None
+WELCOME_CHANNEL_ID = None  # For backward compatibility
+GOODBYE_CHANNEL_ID = None  # For backward compatibility
+MEMBER_COUNT_CHANNEL_ID = None
+
+# Role IDs are now stored in the database on a per-guild basis
+ROLE_USER = None
+ROLE_NEW_ARRIVAL = None
+ROLE_BOT = None
 
 # For backward compatibility
-ROLE_IDS = [ROLE_USER, ROLE_NEW_ARRIVAL]
+ROLE_IDS = []
 
 # Database configuration
 DATABASE_URL = os.getenv("DATABASE_URL", "")
