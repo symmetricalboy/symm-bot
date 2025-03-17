@@ -37,15 +37,25 @@ async def on_ready():
 async def initialize_member_counts():
     """Initializes member counts for all guilds in a background task."""
     try:
+        # Add a small delay to avoid initialization conflicts during startup
+        await asyncio.sleep(2)
+        
         for guild in bot.guilds:
             try:
-                await update_member_count_channel(guild, force_refresh=True)
+                # Use a small timeout to prevent blocking during initialization
+                update_task = asyncio.create_task(update_member_count_channel(guild, force_refresh=True))
+                try:
+                    # Set a reasonable timeout for each guild's update
+                    await asyncio.wait_for(update_task, timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout while initializing member count for guild {guild.name}")
+                
                 # Add a small delay between guilds to avoid rate limits
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"Error initializing member count for guild {guild.name}: {e}")
     except Exception as e:
-        logger.error(f"Error in member count initialization: {e}")
+        logger.error(f"Error in member count initialization: {e}", exc_info=True)
 
 @bot.event
 async def on_member_join(member: disnake.Member):

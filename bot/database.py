@@ -161,15 +161,40 @@ class AsyncDatabaseSession:
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
-            if exc_type:
-                await self.session.rollback()
             try:
+                # If an exception occurred, roll back any changes
+                if exc_type:
+                    try:
+                        await self.session.rollback()
+                    except Exception as e:
+                        logger.error(f"Error rolling back database session: {e}")
+                
+                # Always close the session
                 await self.session.close()
             except Exception as e:
                 logger.error(f"Error closing database session: {e}")
-                
+            finally:
+                # Make sure we nullify the session reference
+                self.session = None
+
 # Create a reusable session context manager
 db_session = AsyncDatabaseSession
+
+# Add function to safely close all database connections during shutdown
+async def cleanup_db():
+    """
+    Safely close all database connections during application shutdown.
+    This prevents "Event loop is closed" errors when the bot restarts.
+    """
+    try:
+        logger.info("Closing database connections...")
+        
+        # Dispose of the engine to close all connections in the pool
+        await engine.dispose()
+        
+        logger.info("Database connections closed successfully")
+    except Exception as e:
+        logger.error(f"Error during database cleanup: {e}")
 
 # Database operations
 async def init_db():
@@ -389,12 +414,32 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
     # Create a fresh session specifically for this operation
     session = None
     try:
-        session = await get_fresh_session()
+        # Get the current event loop to check if it's closed
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logger.warning(f"Event loop is closed when getting server config for guild {guild_id}")
+                return None
+        except RuntimeError:
+            # No event loop running
+            logger.warning(f"No event loop running when getting server config for guild {guild_id}")
+            return None
+            
+        # Create a new session for this query
+        session = async_session()
         
-        # Use a simple, direct query to minimize chances of conflicts
-        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-        result = await session.execute(stmt)
-        config = result.scalars().first()
+        # Use a timeout to prevent hanging
+        async def get_config():
+            stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+            result = await session.execute(stmt)
+            return result.scalars().first()
+            
+        try:
+            # Wrap in timeout to prevent hanging
+            config = await asyncio.wait_for(get_config(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting server config for guild {guild_id}")
+            return None
         
         if not config:
             return None
@@ -405,17 +450,22 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
             "guild_id": config.guild_id,
             "member_count_channel_id": config.member_count_channel_id,
             "notifications_channel_id": config.notifications_channel_id,
-            "new_user_role_ids": config.new_user_role_ids or [],
-            "bot_role_ids": config.bot_role_ids or [],
-            "created_at": config.created_at.isoformat() if config.created_at else None,
-            "updated_at": config.updated_at.isoformat() if config.updated_at else None
+            "new_user_role_ids": config.new_user_role_ids if config.new_user_role_ids else [],
+            "bot_role_ids": config.bot_role_ids if config.bot_role_ids else []
         }
     except SQLAlchemyError as e:
         logger.error(f"Database error getting server config: {e}")
         return None
+    except Exception as e:
+        logger.error(f"Unexpected error getting server config: {e}")
+        return None
     finally:
-        # Always close session to avoid leaks
-        await safe_close_session(session)
+        # Always clean up the session
+        if session:
+            try:
+                await session.close()
+            except Exception as e:
+                logger.error(f"Error closing session in get_server_config: {e}")
 
 
 async def set_member_count_channel(guild_id: int, channel_id: int) -> bool:
@@ -531,58 +581,11 @@ async def set_new_user_roles(guild_id: int, role_ids: List[int]) -> bool:
 
 async def set_bot_roles(guild_id: int, role_ids: List[int]) -> bool:
     """
-    Set the roles to assign to bots.
+    Set the bot role IDs for a guild.
     
     Args:
         guild_id: Discord guild ID
-        role_ids: List of role IDs to assign
-        
-    Returns:
-        Whether the operation was successful
-    """
-    try:
-        async with async_session() as session:
-            async with session.begin():
-                # Try to find existing config
-                result = await session.execute(
-                    select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-                )
-                config = result.scalars().first()
-                
-                if config:
-                    # Update existing config
-                    config.bot_role_ids = role_ids
-                else:
-                    # Create new config
-                    config = ServerConfig(
-                        guild_id=guild_id,
-                        bot_role_ids=role_ids
-                    )
-                    session.add(config)
-                
-                return True
-    except SQLAlchemyError as e:
-        logger.error(f"Database error setting bot roles: {e}")
-        return False
-
-
-async def migrate_env_to_db(
-    guild_id: int,
-    member_count_channel_id: Optional[int] = None,
-    notifications_channel_id: Optional[int] = None,
-    new_user_role_ids: Optional[List[int]] = None,
-    bot_role_ids: Optional[List[int]] = None
-) -> bool:
-    """
-    Migrate environment variables to database for a guild.
-    Only updates fields that are provided (not None).
-    
-    Args:
-        guild_id: Discord guild ID
-        member_count_channel_id: Optional member count channel ID
-        notifications_channel_id: Optional notifications channel ID
-        new_user_role_ids: Optional list of new user role IDs
-        bot_role_ids: Optional list of bot role IDs
+        role_ids: List of role IDs to assign to bots
         
     Returns:
         Whether the operation was successful
@@ -602,42 +605,29 @@ async def migrate_env_to_db(
             config = ServerConfig(guild_id=guild_id)
             session.add(config)
         
-        # Update only provided fields
-        if member_count_channel_id is not None:
-            config.member_count_channel_id = member_count_channel_id
-            
-        if notifications_channel_id is not None:
-            config.notifications_channel_id = notifications_channel_id
-            
-        if new_user_role_ids is not None:
-            config.new_user_role_ids = new_user_role_ids
-            
-        if bot_role_ids is not None:
-            config.bot_role_ids = bot_role_ids
+        # Update config
+        config.bot_role_ids = role_ids
         
         # Commit changes
         await session.commit()
         return True
     except SQLAlchemyError as e:
-        logger.error(f"Database error migrating env to db: {e}")
         if session:
             await session.rollback()
+        logger.error(f"Database error setting bot roles: {e}")
         return False
     finally:
-        # Always close session to avoid leaks
         await safe_close_session(session)
 
 
-# Role blocking operations
 async def add_role_block(guild_id: int, blocking_role_id: int, blocked_role_id: int) -> bool:
     """
     Add a role blocking relationship.
-    If a user has the blocking_role_id, they cannot select the blocked_role_id.
     
     Args:
         guild_id: Discord guild ID
-        blocking_role_id: Role ID that blocks
-        blocked_role_id: Role ID that is blocked
+        blocking_role_id: The role ID that blocks
+        blocked_role_id: The role ID that is blocked
         
     Returns:
         Whether the operation was successful

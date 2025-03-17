@@ -4,32 +4,27 @@ A Discord bot for the symm.city server with advanced role management, server con
 
 ## Features
 
-- **Member Count Display**: Automatically updates a voice channel to show current member count
-- **Welcome & Goodbye Messages**: Sends notifications when members join or leave
-- **Role Management System**:
-  - Interactive role selection menus with persistent buttons
-  - Role exclusivity options (mutually exclusive roles within a menu)
-  - Role blocking system (prevent users with certain roles from selecting other roles)
-- **Server Configuration**: Store server settings in a database for improved flexibility
-- **Multi-Server Support**: Configure different settings for each server
-- **AI-Powered Help System**:
-  - Answer user questions about the server using Google's Gemini AI
-  - Custom server documentation managed by administrators
-  - Natural language responses to help queries
+1. **Role Selection Menus** - Create interactive role menus with buttons
+2. **Member Count Display** - Shows the current server member count in a voice channel name
+3. **Join/Leave Notifications** - Sends notifications when users join or leave
+4. **Role Block System** - Prevent users with certain roles from selecting other roles
+5. **AI-powered Help** - Ask questions about the server and get AI responses
 
 ## Project Structure
 
 The project is organized into modular components to make development easier:
 
-- `bot/config.py` - Configuration variables and bot initialization
-- `bot/commands.py` - Slash commands and command registration
-- `bot/events.py` - Event listeners (on_ready, on_member_join, etc.)
-- `bot/utils.py` - Utility functions used across the bot
-- `bot/tasks.py` - Background tasks that run periodically
-- `bot/database.py` - Database models and operations
-- `bot/ai_helper.py` - AI integration with Gemini for help responses
-- `bot/main.py` - Module initialization and coordination
-- `run.py` - Entry point to start the bot
+- `bot/` - Main package for the Discord bot
+  - `__init__.py` - Package initialization
+  - `main.py` - Bot startup and main event loop
+  - `config.py` - Configuration loading and setup
+  - `commands.py` - Discord slash commands
+  - `database.py` - Database models and operations
+  - `events.py` - Event handlers for Discord events
+  - `utils.py` - Utility functions
+  - `ai_helper.py` - AI integration using Google's Gemini API
+  - `tasks.py` - Scheduled tasks
+- `run.py` - Main entry point for starting the bot
 
 ## Development
 
@@ -64,33 +59,36 @@ The bot uses PostgreSQL to store server configurations, role menus, and role rel
 1. Create a PostgreSQL database
 2. Set the `DATABASE_URL` environment variable
 3. The bot will automatically create the necessary tables on first run
-4. If upgrading from a previous version, use the `/migrate_config` command to transfer environment variable settings to the database
 
-## Available Commands
+## Commands
 
-### Role Management
+Here are the main commands provided by the bot:
 
-- `/create_role_menu` - Create a new role selection menu with buttons
-- `/block_role` - Set a role that prevents users from selecting another role
-- `/unblock_role` - Remove a role blocking relationship
-- `/view_role_blocks` - View all role blocking relationships in the server
-
-### Server Configuration
-
+- `/create_role_menu` - Create a role selection menu with buttons
 - `/set_member_count_channel` - Set the channel to display member count
 - `/set_notifications_channel` - Set the channel for join/leave notifications
-- `/set_new_user_roles` - Set roles to assign to new human users
-- `/set_bot_roles` - Set roles to assign to new bot users
-- `/view_server_config` - View current server configuration
-- `/migrate_config` - Migrate environment variables to database storage
+- `/set_new_user_roles` - Set roles to assign to new users who join
+- `/set_bot_roles` - Set roles to assign to bots that join
+- `/view_server_config` - View the current server configuration
+- `/block_role` - Block users with a certain role from selecting another role
+- `/unblock_role` - Remove a role blocking relationship
+- `/view_role_blocks` - View all role blocking relationships
+- `/server_docs add` - Add/update documentation for AI help
+- `/server_docs remove` - Remove documentation
+- `/server_docs list` - List all documentation
+- `/server_docs view` - View a specific documentation entry
+- `/help` - Ask a question and get AI-powered help
+- `/update_member_count` - Manually update the member count channel
 
-### AI Help System
+## Configuration
 
-- `/help` - Ask a question about the server and get an AI-powered response
-- `/server_docs add` - Add or update server documentation (admin only)
-- `/server_docs remove` - Remove server documentation (admin only)
-- `/server_docs list` - List all server documentation (admin only)
-- `/server_docs view` - View a specific documentation entry (admin only)
+The bot can be configured through either environment variables or directly via Discord commands.
+
+### Setting up Configuration
+
+1. Use the bot commands to set up the server configuration directly.
+2. All settings are stored in the database and can be viewed with `/view_server_config`
+3. Use the role management commands to set up role menus and role blocks
 
 ## Running the Bot
 

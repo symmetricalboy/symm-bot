@@ -6,7 +6,7 @@ from .utils import update_member_count_channel
 from .database import (
     create_role_menu, get_role_menu_by_message, get_role_menu_by_role_id,
     set_member_count_channel, set_notifications_channel, set_new_user_roles, set_bot_roles,
-    get_server_config, migrate_env_to_db,
+    get_server_config,
     add_role_block, remove_role_block, get_blocked_roles, get_blocking_role, get_role_blocks,
     add_server_documentation, delete_server_documentation, get_server_documentation
 )
@@ -686,61 +686,9 @@ async def cmd_view_server_config(inter: disnake.ApplicationCommandInteraction):
     
     except Exception as e:
         logger.error(f"Error in view_server_config command: {e}", exc_info=True)
-        await inter.followup.send(f"Error viewing server configuration: {str(e)}", ephemeral=True)
+        await inter.followup.send("An error occurred while retrieving server configuration.", ephemeral=True)
 
 
-@bot.slash_command(
-    name="migrate_config",
-    description="Migrate environment configuration to database"
-)
-@commands.has_permissions(administrator=True)  # Only administrators can use this command
-async def cmd_migrate_config(inter: disnake.ApplicationCommandInteraction):
-    """Migrate environment configuration to database."""
-    await inter.response.defer(ephemeral=True)
-    
-    try:
-        # This command should be run once after updating to this version
-        # It will take the environment variables and store them in the database
-        from .config import MEMBER_COUNT_CHANNEL_ID, NOTIFICATIONS_CHANNEL_ID, ROLE_USER, ROLE_NEW_ARRIVAL, ROLE_BOT
-        
-        guild_id = inter.guild.id
-        
-        # Roles for new users (non-bots)
-        new_user_role_ids = []
-        if ROLE_USER:
-            new_user_role_ids.append(ROLE_USER)
-        if ROLE_NEW_ARRIVAL:
-            new_user_role_ids.append(ROLE_NEW_ARRIVAL)
-        
-        # Roles for bots
-        bot_role_ids = []
-        if ROLE_BOT:
-            bot_role_ids.append(ROLE_BOT)
-        
-        # Migrate to database
-        success = await migrate_env_to_db(
-            guild_id=guild_id,
-            member_count_channel_id=MEMBER_COUNT_CHANNEL_ID,
-            notifications_channel_id=NOTIFICATIONS_CHANNEL_ID,
-            new_user_role_ids=new_user_role_ids if new_user_role_ids else None,
-            bot_role_ids=bot_role_ids if bot_role_ids else None
-        )
-        
-        if success:
-            await inter.followup.send(
-                "Successfully migrated environment configuration to database. "
-                "Use `/view_server_config` to see the current configuration.",
-                ephemeral=True
-            )
-        else:
-            await inter.followup.send("Failed to migrate configuration.", ephemeral=True)
-    
-    except Exception as e:
-        logger.error(f"Error in migrate_config command: {e}", exc_info=True)
-        await inter.followup.send(f"Error migrating configuration: {str(e)}", ephemeral=True)
-
-
-# Role Blocking Commands
 @bot.slash_command(
     name="block_role",
     description="Set a role that blocks users from selecting another role"

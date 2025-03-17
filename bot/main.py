@@ -3,6 +3,9 @@ Main entry point for the Discord bot.
 This file imports and initializes all components from their respective modules.
 """
 import logging
+import asyncio
+import signal
+import sys
 
 # Import configuration and bot instance
 from bot.config import bot, DISCORD_BOT_TOKEN, logger
@@ -33,13 +36,38 @@ async def on_connect():
     # This ensures the bot knows how to handle interactions with persistent views 
     # that were created before the bot restarted
 
+# Register cleanup handlers for graceful shutdown
+def register_shutdown_handlers():
+    """Register signal handlers for graceful shutdown."""
+    loop = asyncio.get_event_loop()
+    
+    async def cleanup():
+        """Clean up resources before shutdown."""
+        logger.info("Shutting down bot...")
+        
+        # Close all database connections
+        await database.cleanup_db()
+        
+        # Close the bot connection
+        if not bot.is_closed():
+            await bot.close()
+    
+    # Register signal handlers for different platforms
+    if sys.platform != "win32":
+        # SIGTERM is sent when the container is stopped
+        loop.add_signal_handler(signal.SIGTERM, lambda: loop.create_task(cleanup()))
+        # SIGINT is sent when pressing CTRL+C
+        loop.add_signal_handler(signal.SIGINT, lambda: loop.create_task(cleanup()))
+
 # Run the bot
 if __name__ == "__main__":
     logger.info("Starting bot...")
     # Run initialization tasks
-    import asyncio
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_modules())
+    
+    # Register shutdown handlers
+    register_shutdown_handlers()
     
     # Start the bot
     bot.run(DISCORD_BOT_TOKEN)

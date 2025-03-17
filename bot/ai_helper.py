@@ -5,7 +5,8 @@ using server-specific documentation as context.
 """
 import os
 import logging
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from typing import Optional, Dict, Any, List
 
 from .database import get_all_server_documentation_content
@@ -15,9 +16,11 @@ logger = logging.getLogger(__name__)
 # Initialize the Gemini API with the API key from environment variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    # Initialize the Gemini client
+    client = genai.Client(api_key=GEMINI_API_KEY)
     logger.info("Gemini API initialized successfully")
 else:
+    client = None
     logger.warning("No GEMINI_API_KEY found in environment variables, AI help features will be disabled")
 
 # Use the Gemini 2.0 Flash model for faster responses
@@ -45,6 +48,7 @@ based solely on the provided documentation.
 async def generate_ai_response(guild_id: int, user_question: str) -> Optional[str]:
     """
     Generate an AI response to a user question using server documentation as context.
+    Uses streaming to process the response as it's generated.
     
     Args:
         guild_id: Discord guild ID
@@ -53,7 +57,7 @@ async def generate_ai_response(guild_id: int, user_question: str) -> Optional[st
     Returns:
         AI-generated response, or None if generation failed
     """
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEY or client is None:
         return "Sorry, AI help is currently unavailable because the Gemini API key is not configured."
     
     try:
@@ -66,25 +70,46 @@ async def generate_ai_response(guild_id: int, user_question: str) -> Optional[st
         # Create the system prompt with server documentation
         system_prompt = SYSTEM_PROMPT_TEMPLATE.format(server_documentation=server_documentation)
         
-        # Set up the model
-        model = genai.GenerativeModel(MODEL_NAME)
+        # Prepare the user content
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=user_question)]
+            )
+        ]
         
-        # Generate response
-        response = model.generate_content(
-            [
-                {"role": "system", "parts": [system_prompt]},
-                {"role": "user", "parts": [user_question]}
-            ],
-            generation_config={
-                "temperature": 0.2,  # Lower temperature for more factual responses
-                "max_output_tokens": 800,  # Limit response length
-                "top_p": 0.95,
-                "top_k": 40,
-            }
+        # Configure generation parameters
+        generate_config = types.GenerateContentConfig(
+            temperature=0.2,  # Lower temperature for more factual responses
+            max_output_tokens=800,  # Limit response length
+            top_p=0.95,
+            top_k=40,
+            response_mime_type="text/plain",
+            # System instructions provided in the config
+            system_instruction=[
+                types.Part.from_text(text=system_prompt)
+            ]
         )
         
-        # Return the generated text
-        return response.text
+        # Generate the response using streaming
+        response_parts = []
+        stream = client.models.generate_content_stream(
+            model=MODEL_NAME,
+            contents=contents,
+            config=generate_config
+        )
+        
+        # Collect all streaming chunks
+        async for chunk in stream:
+            if hasattr(chunk, 'text') and chunk.text:
+                response_parts.append(chunk.text)
+                logger.debug(f"Received chunk: {chunk.text[:20]}...")
+        
+        # Join all the response parts into a single string
+        full_response = "".join(response_parts)
+        logger.info(f"Generated AI response of length {len(full_response)} characters")
+        
+        return full_response
         
     except Exception as e:
         logger.error(f"Error generating AI response: {e}", exc_info=True)

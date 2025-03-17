@@ -2,6 +2,7 @@ import disnake
 import logging
 from .config import bot
 from .database import get_server_config
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +127,24 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         guild: The guild to update the member count for
         force_refresh: Whether to force a full count refresh
     """
+    member_count_channel_id = None
+    
     try:
+        # Check if event loop is closed
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logger.warning(f"Event loop is closed when updating member count for guild {guild.name}")
+                return
+        except RuntimeError:
+            # No event loop running
+            logger.warning(f"No event loop running when updating member count for guild {guild.name}")
+            return
+        
         # Use server config with error handling to avoid loop issues
         try:
             # Get the member count channel ID from the database
             server_config = await get_server_config(guild.id)
-            member_count_channel_id = None
             
             if server_config:
                 member_count_channel_id = server_config.get("member_count_channel_id")
@@ -156,8 +169,15 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
             logger.error(f"Member count channel with ID {member_count_channel_id} not found in guild {guild.name}")
             return
         
-        # Get the human member count
-        human_count = await get_human_member_count(guild, force_refresh)
+        # Get the human member count with a timeout
+        try:
+            human_count = await asyncio.wait_for(
+                get_human_member_count(guild, force_refresh),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting human member count for guild {guild.name}")
+            return
         
         # Ensure the bot has the permissions to update the channel
         bot_member = guild.get_member(bot.user.id)
@@ -174,10 +194,16 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         new_name = f"Members: {human_count}"
         
         if channel.name != new_name:
-            await channel.edit(name=new_name)
-            logger.info(f"Updated member count channel in {guild.name} to '{new_name}'")
+            try:
+                await asyncio.wait_for(
+                    channel.edit(name=new_name),
+                    timeout=10.0
+                )
+                logger.info(f"Updated member count channel in {guild.name} to '{new_name}'")
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout updating member count channel in {guild.name}")
         else:
             logger.info(f"Member count channel in {guild.name} already up to date: '{new_name}'")
             
     except Exception as e:
-        logger.error(f"Error updating member count channel: {e}") 
+        logger.error(f"Error updating member count channel for {guild.name}: {e}", exc_info=True) 
