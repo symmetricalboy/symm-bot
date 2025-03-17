@@ -27,6 +27,7 @@ pillow==11.0.0
 propcache==0.2.1
 proto-plus==1.25.0
 protobuf==5.29.2
+psycopg2-binary==2.9.9
 pyasn1==0.6.1
 pyasn1_modules==0.4.1
 pydantic==2.10.3
@@ -35,6 +36,8 @@ pyparsing==3.2.0
 python-dotenv==1.0.1
 requests==2.32.3
 rsa==4.9
+sqlalchemy==2.0.28
+sqlalchemy[asyncio]==2.0.28
 tqdm==4.67.1
 typing_extensions==4.12.2
 uritemplate==4.1.1

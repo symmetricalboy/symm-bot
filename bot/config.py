@@ -34,6 +34,11 @@ ROLE_BOT = int(os.getenv("ROLE_BOT", 0))  # New role for bots
 # For backward compatibility
 ROLE_IDS = [ROLE_USER, ROLE_NEW_ARRIVAL]
 
+# Database configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+if not DATABASE_URL:
+    logger.warning("DATABASE_URL not set in environment variables")
+
 # Set up intents
 intents = disnake.Intents.default()
 intents.message_content = True

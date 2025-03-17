@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import disnake
-from .config import bot, NOTIFICATIONS_CHANNEL_ID, ROLE_USER, ROLE_NEW_ARRIVAL, ROLE_BOT
+from .config import bot
 from .utils import update_member_count_channel, increment_member_count, decrement_member_count
 from .tasks import member_count_updater
+from .database import get_server_config
 
 logger = logging.getLogger(__name__)
 
@@ -41,46 +42,80 @@ async def on_member_join(member: disnake.Member):
     try:
         guild = member.guild
         
+        # Get server configuration from database
+        server_config = await get_server_config(guild.id)
+        
+        # Get role IDs from database or fall back to environment variables
+        new_user_role_ids = []
+        bot_role_ids = []
+        
+        if server_config:
+            # Use database configuration
+            notifications_channel_id = server_config.get("notifications_channel_id")
+            new_user_role_ids = server_config.get("new_user_role_ids", [])
+            bot_role_ids = server_config.get("bot_role_ids", [])
+        else:
+            # Fall back to environment variables
+            from .config import NOTIFICATIONS_CHANNEL_ID, ROLE_USER, ROLE_NEW_ARRIVAL, ROLE_BOT
+            notifications_channel_id = NOTIFICATIONS_CHANNEL_ID
+            
+            if ROLE_USER:
+                new_user_role_ids.append(ROLE_USER)
+            if ROLE_NEW_ARRIVAL:
+                new_user_role_ids.append(ROLE_NEW_ARRIVAL)
+            if ROLE_BOT:
+                bot_role_ids.append(ROLE_BOT)
+        
         if member.bot:
             # Handle bot joins
             logger.info(f"Bot {member.name} joined the server")
             
-            # Assign Bot role if configured
-            if ROLE_BOT:
-                bot_role = guild.get_role(ROLE_BOT)
-                if bot_role:
-                    await member.add_roles(bot_role)
-                    logger.info(f"Assigned Bot role to {member.name} in {guild.name}")
-                else:
-                    logger.error(f"Bot role with ID {ROLE_BOT} not found")
+            # Assign Bot roles if configured
+            if bot_role_ids:
+                roles_to_add = []
+                for role_id in bot_role_ids:
+                    role = guild.get_role(role_id)
+                    if role:
+                        roles_to_add.append(role)
+                        logger.info(f"Will assign {role.name} role to bot {member.name}")
+                    else:
+                        logger.error(f"Bot role with ID {role_id} not found in guild {guild.name}")
+                
+                if roles_to_add:
+                    await member.add_roles(*roles_to_add)
+                    logger.info(f"Assigned roles to bot {member.name} in {guild.name}")
+            
+            # Send notification message for bot joins
+            notifications_channel = bot.get_channel(notifications_channel_id)
+            if notifications_channel:
+                await notifications_channel.send(f"Bot {member.name} has joined the server.")
+            else:
+                logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
             
             # Bots don't affect the human member count
         else:
             # Handle human user joins
-            user_role = guild.get_role(ROLE_USER)
-            new_arrival_role = guild.get_role(ROLE_NEW_ARRIVAL)
-            
             roles_to_add = []
-            if user_role:
-                roles_to_add.append(user_role)
-            else:
-                logger.error(f"User role with ID {ROLE_USER} not found")
-                
-            if new_arrival_role:
-                roles_to_add.append(new_arrival_role)
-            else:
-                logger.error(f"New Arrival role with ID {ROLE_NEW_ARRIVAL} not found")
+            
+            # Get roles by IDs
+            for role_id in new_user_role_ids:
+                role = guild.get_role(role_id)
+                if role:
+                    roles_to_add.append(role)
+                    logger.info(f"Will assign {role.name} role to {member.name}")
+                else:
+                    logger.error(f"User role with ID {role_id} not found in guild {guild.name}")
             
             if roles_to_add:
                 await member.add_roles(*roles_to_add)
                 logger.info(f"Assigned roles to {member.name} in {guild.name}")
             
             # Send welcome message for human users
-            notifications_channel = bot.get_channel(NOTIFICATIONS_CHANNEL_ID)
+            notifications_channel = bot.get_channel(notifications_channel_id)
             if notifications_channel:
                 await notifications_channel.send(f"Welcome to the server, {member.mention}!")
             else:
-                logger.error(f"Notifications channel with ID {NOTIFICATIONS_CHANNEL_ID} not found")
+                logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
             
             # Increment the human member count
             increment_member_count(guild.id)
@@ -103,12 +138,22 @@ async def on_member_remove(member: disnake.Member):
         guild = member.guild
         logger.info(f"Member removed: {member.name} (ID: {member.id}) from {guild.name}")
         
+        # Get server configuration from database
+        server_config = await get_server_config(guild.id)
+        
+        # Get notifications channel ID from database or fall back to environment variable
+        if server_config:
+            notifications_channel_id = server_config.get("notifications_channel_id")
+        else:
+            from .config import NOTIFICATIONS_CHANNEL_ID
+            notifications_channel_id = NOTIFICATIONS_CHANNEL_ID
+        
         # Send goodbye message
-        notifications_channel = bot.get_channel(NOTIFICATIONS_CHANNEL_ID)
+        notifications_channel = bot.get_channel(notifications_channel_id)
         if notifications_channel:
             await notifications_channel.send(f"{member.name} has left the server.")
         else:
-            logger.error(f"Notifications channel with ID {NOTIFICATIONS_CHANNEL_ID} not found")
+            logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
         
         # If the member is not a bot, decrement the human member count
         if not member.bot:

@@ -1,6 +1,7 @@
 import disnake
 import logging
-from .config import MEMBER_COUNT_CHANNEL_ID, bot
+from .config import bot
+from .database import get_server_config
 
 logger = logging.getLogger(__name__)
 
@@ -126,23 +127,45 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         force_refresh: Whether to force a full count refresh
     """
     try:
-        channel = guild.get_channel(MEMBER_COUNT_CHANNEL_ID)
+        # Get the member count channel ID from the database
+        server_config = await get_server_config(guild.id)
+        member_count_channel_id = None
+        
+        if server_config:
+            member_count_channel_id = server_config.get("member_count_channel_id")
+        
+        # If not in database, fallback to environment variable
+        if not member_count_channel_id:
+            from .config import MEMBER_COUNT_CHANNEL_ID
+            member_count_channel_id = MEMBER_COUNT_CHANNEL_ID
+        
+        channel = guild.get_channel(member_count_channel_id)
         if not channel:
-            logger.error(f"Member count channel with ID {MEMBER_COUNT_CHANNEL_ID} not found")
+            logger.error(f"Member count channel with ID {member_count_channel_id} not found in guild {guild.name}")
             return
         
         # Get the human member count
         human_count = await get_human_member_count(guild, force_refresh)
+        
+        # Ensure the bot has the permissions to update the channel
+        bot_member = guild.get_member(bot.user.id)
+        if not bot_member:
+            logger.error(f"Bot member not found in guild {guild.name}")
+            return
             
-        # Format: "Members: 123"
+        permissions = channel.permissions_for(bot_member)
+        if not permissions.manage_channels:
+            logger.warning(f"Bot doesn't have permission to manage channels in {guild.name}")
+            return
+            
+        # Update the channel name
         new_name = f"Members: {human_count}"
         
-        # Only update if the name has changed to avoid API rate limits
         if channel.name != new_name:
             await channel.edit(name=new_name)
-            logger.info(f"Updated member count channel to '{new_name}'")
+            logger.info(f"Updated member count channel in {guild.name} to '{new_name}'")
         else:
-            logger.info(f"Channel name already up to date: {new_name}")
+            logger.info(f"Member count channel in {guild.name} already up to date: '{new_name}'")
             
     except Exception as e:
         logger.error(f"Error updating member count channel: {e}", exc_info=True) 
