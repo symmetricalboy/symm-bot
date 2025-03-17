@@ -23,12 +23,29 @@ async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     
     # Initialize member counts for all guilds with a full refresh
+    # Use separate background task to avoid event loop issues
     logger.info("Initializing member counts for all guilds")
-    for guild in bot.guilds:
-        await update_member_count_channel(guild, force_refresh=True)
+    
+    # Schedule the initialization in a background task
+    bot.loop.create_task(initialize_member_counts())
     
     # Start background task to update member count periodically
-    bot.loop.create_task(member_count_updater())
+    if not hasattr(bot, 'member_count_task') or bot.member_count_task.done():
+        bot.member_count_task = bot.loop.create_task(member_count_updater())
+        logger.info("Started member count updater task")
+
+async def initialize_member_counts():
+    """Initializes member counts for all guilds in a background task."""
+    try:
+        for guild in bot.guilds:
+            try:
+                await update_member_count_channel(guild, force_refresh=True)
+                # Add a small delay between guilds to avoid rate limits
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error initializing member count for guild {guild.name}: {e}")
+    except Exception as e:
+        logger.error(f"Error in member count initialization: {e}")
 
 @bot.event
 async def on_member_join(member: disnake.Member):

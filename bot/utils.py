@@ -127,17 +127,29 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         force_refresh: Whether to force a full count refresh
     """
     try:
-        # Get the member count channel ID from the database
-        server_config = await get_server_config(guild.id)
-        member_count_channel_id = None
+        # Use server config with error handling to avoid loop issues
+        try:
+            # Get the member count channel ID from the database
+            server_config = await get_server_config(guild.id)
+            member_count_channel_id = None
+            
+            if server_config:
+                member_count_channel_id = server_config.get("member_count_channel_id")
+        except Exception as db_error:
+            logger.error(f"Error getting server config for guild {guild.id}: {db_error}")
+            # Fallback to environment variable
+            from .config import MEMBER_COUNT_CHANNEL_ID
+            member_count_channel_id = MEMBER_COUNT_CHANNEL_ID
         
-        if server_config:
-            member_count_channel_id = server_config.get("member_count_channel_id")
-        
-        # If not in database, fallback to environment variable
+        # If still not found, fallback to environment variable
         if not member_count_channel_id:
             from .config import MEMBER_COUNT_CHANNEL_ID
             member_count_channel_id = MEMBER_COUNT_CHANNEL_ID
+            
+        # If we still don't have a channel ID, log and return
+        if not member_count_channel_id:
+            logger.debug(f"No member count channel configured for guild {guild.name}")
+            return
         
         channel = guild.get_channel(member_count_channel_id)
         if not channel:
@@ -168,4 +180,4 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
             logger.info(f"Member count channel in {guild.name} already up to date: '{new_name}'")
             
     except Exception as e:
-        logger.error(f"Error updating member count channel: {e}", exc_info=True) 
+        logger.error(f"Error updating member count channel: {e}") 

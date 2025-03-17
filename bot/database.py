@@ -384,29 +384,38 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
     Returns:
         Dictionary with server configuration, or None if not found
     """
+    # Create a new session for each request to avoid loop conflicts
+    session = None
     try:
-        async with db_session() as session:
-            result = await session.execute(
-                select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-            )
-            config = result.scalars().first()
+        session = async_session()
+        result = await session.execute(
+            select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        )
+        config = result.scalars().first()
+        
+        if not config:
+            return None
             
-            if not config:
-                return None
-                
-            return {
-                "id": config.id,
-                "guild_id": config.guild_id,
-                "member_count_channel_id": config.member_count_channel_id,
-                "notifications_channel_id": config.notifications_channel_id,
-                "new_user_role_ids": config.new_user_role_ids or [],
-                "bot_role_ids": config.bot_role_ids or [],
-                "created_at": config.created_at.isoformat() if config.created_at else None,
-                "updated_at": config.updated_at.isoformat() if config.updated_at else None
-            }
+        return {
+            "id": config.id,
+            "guild_id": config.guild_id,
+            "member_count_channel_id": config.member_count_channel_id,
+            "notifications_channel_id": config.notifications_channel_id,
+            "new_user_role_ids": config.new_user_role_ids or [],
+            "bot_role_ids": config.bot_role_ids or [],
+            "created_at": config.created_at.isoformat() if config.created_at else None,
+            "updated_at": config.updated_at.isoformat() if config.updated_at else None
+        }
     except SQLAlchemyError as e:
         logger.error(f"Database error getting server config: {e}")
         return None
+    finally:
+        # Always close session to avoid leaks
+        if session:
+            try:
+                await session.close()
+            except Exception as e:
+                logger.error(f"Error closing database session: {e}")
 
 
 async def set_member_count_channel(guild_id: int, channel_id: int) -> bool:
@@ -578,38 +587,47 @@ async def migrate_env_to_db(
     Returns:
         Whether the operation was successful
     """
+    # Create a direct session to avoid asyncio loop issues
+    session = None
     try:
-        async with db_session() as session:
-            # Start transaction
-            async with session.begin():
-                # Try to find existing config
-                result = await session.execute(
-                    select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-                )
-                config = result.scalars().first()
+        session = async_session()
+        # Start transaction
+        async with session.begin():
+            # Try to find existing config
+            result = await session.execute(
+                select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+            )
+            config = result.scalars().first()
+            
+            if not config:
+                # Create new config
+                config = ServerConfig(guild_id=guild_id)
+                session.add(config)
+            
+            # Update only provided fields
+            if member_count_channel_id is not None:
+                config.member_count_channel_id = member_count_channel_id
                 
-                if not config:
-                    # Create new config
-                    config = ServerConfig(guild_id=guild_id)
-                    session.add(config)
+            if notifications_channel_id is not None:
+                config.notifications_channel_id = notifications_channel_id
                 
-                # Update only provided fields
-                if member_count_channel_id is not None:
-                    config.member_count_channel_id = member_count_channel_id
-                    
-                if notifications_channel_id is not None:
-                    config.notifications_channel_id = notifications_channel_id
-                    
-                if new_user_role_ids is not None:
-                    config.new_user_role_ids = new_user_role_ids
-                    
-                if bot_role_ids is not None:
-                    config.bot_role_ids = bot_role_ids
+            if new_user_role_ids is not None:
+                config.new_user_role_ids = new_user_role_ids
                 
-                return True
+            if bot_role_ids is not None:
+                config.bot_role_ids = bot_role_ids
+        
+        return True
     except SQLAlchemyError as e:
         logger.error(f"Database error migrating env to db: {e}")
         return False
+    finally:
+        # Always close session to avoid leaks
+        if session:
+            try:
+                await session.close()
+            except Exception as e:
+                logger.error(f"Error closing database session: {e}")
 
 
 # Role blocking operations
