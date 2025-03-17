@@ -20,8 +20,8 @@ if GEMINI_API_KEY:
 else:
     logger.warning("No GEMINI_API_KEY found in environment variables, AI help features will be disabled")
 
-# Use the Gemini Pro model
-MODEL_NAME = "gemini-pro"
+# Use the Gemini 2.0 Flash model for faster responses
+MODEL_NAME = "gemini-2.0-flash"
 
 # System prompt template
 SYSTEM_PROMPT_TEMPLATE = """
