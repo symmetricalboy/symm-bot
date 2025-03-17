@@ -148,10 +148,17 @@ class ServerDocumentation(Base):
 # Database operations
 async def init_db():
     """Initialize the database by creating all tables."""
-    async with engine.begin() as conn:
-        # Create tables if they don't exist
-        await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database initialized successfully")
+    try:
+        async with engine.begin() as conn:
+            # Create tables if they don't exist
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database initialized successfully")
+    except SQLAlchemyError as e:
+        logger.error(f"Database initialization failed: {e}")
+        # Print out more detailed error information
+        logger.error(f"Database URL: {ASYNC_DATABASE_URL.replace(DATABASE_URL.split('@')[0], '***')}")
+        logger.error(f"Tables to create: {[table.name for table in Base.metadata.tables.values()]}")
+        raise
 
 
 async def create_role_menu(
