@@ -8,7 +8,8 @@ from .database import (
     set_member_count_channel, set_notifications_channel, set_new_user_roles, set_bot_roles,
     get_server_config,
     add_role_block, remove_role_block, get_blocked_roles, get_blocking_role, get_role_blocks,
-    add_server_documentation, delete_server_documentation, get_server_documentation
+    add_server_documentation, delete_server_documentation, get_server_documentation,
+    safe_db_operation
 )
 from .ai_helper import generate_ai_response
 
@@ -31,7 +32,13 @@ async def handle_button_interactions(inter: disnake.MessageInteraction):
     """
     Handle button interactions from persistent views.
     This function is called for any button click after a bot restart.
+    Only handles orphaned buttons (those without active views).
     """
+    # If this button is already handled by a view, skip it
+    if inter.message.id in bot._connection._view_store:
+        # This interaction already has a view, let the normal callback handle it
+        return
+        
     custom_id = inter.component.custom_id
     
     # Check if this is a role button
@@ -51,7 +58,9 @@ async def handle_button_interactions(inter: disnake.MessageInteraction):
             user_role_ids = [r.id for r in member.roles]
             
             # Check if this role is blocked by any of the user's roles
-            blocking_role_id = await get_blocking_role(guild.id, user_role_ids, role_id)
+            # Use safe_db_operation to avoid event loop errors
+            blocking_role_id = await safe_db_operation(get_blocking_role, guild.id, user_role_ids, role_id)
+            
             if blocking_role_id is not None:
                 # Find the role name for better error message
                 blocking_role = guild.get_role(blocking_role_id)
@@ -64,7 +73,7 @@ async def handle_button_interactions(inter: disnake.MessageInteraction):
                 return
             
             # Look up the menu configuration from the database
-            menu_data = await get_role_menu_by_role_id(role_id, guild.id)
+            menu_data = await safe_db_operation(get_role_menu_by_role_id, role_id, guild.id)
             exclusive = menu_data["exclusive"] if menu_data else False
             button_ids = menu_data.get("button_ids", []) if menu_data else []
             
@@ -152,7 +161,11 @@ class RoleButton(disnake.ui.Button):
         role = guild.get_role(self.role_id)
         
         if not role:
-            await interaction.response.send_message(f"Error: Role not found.", ephemeral=True)
+            try:
+                await interaction.response.send_message(f"Error: Role not found.", ephemeral=True)
+            except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                # If the interaction was already responded to, use followup instead
+                await interaction.followup.send(f"Error: Role not found.", ephemeral=True)
             return
         
         try:
@@ -160,16 +173,23 @@ class RoleButton(disnake.ui.Button):
             user_role_ids = [r.id for r in member.roles]
             
             # Check if this role is blocked by any of the user's roles
-            blocking_role_id = await get_blocking_role(guild.id, user_role_ids, self.role_id)
+            blocking_role_id = await safe_db_operation(get_blocking_role, guild.id, user_role_ids, self.role_id)
+            
             if blocking_role_id is not None:
                 # Find the role name for better error message
                 blocking_role = guild.get_role(blocking_role_id)
                 blocking_role_name = blocking_role.name if blocking_role else f"Unknown Role (ID: {blocking_role_id})"
                 
-                await interaction.response.send_message(
-                    f"You cannot select the {role.name} role because you have the {blocking_role_name} role.", 
-                    ephemeral=True
-                )
+                try:
+                    await interaction.response.send_message(
+                        f"You cannot select the {role.name} role because you have the {blocking_role_name} role.", 
+                        ephemeral=True
+                    )
+                except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                    await interaction.followup.send(
+                        f"You cannot select the {role.name} role because you have the {blocking_role_name} role.", 
+                        ephemeral=True
+                    )
                 return
             
             # If exclusive, remove all other roles from the same group
@@ -187,16 +207,28 @@ class RoleButton(disnake.ui.Button):
             # Toggle the role
             if role in member.roles:
                 await member.remove_roles(role, reason="Role menu selection")
-                await interaction.response.send_message(f"Removed the {role.name} role.", ephemeral=True)
+                try:
+                    await interaction.response.send_message(f"Removed the {role.name} role.", ephemeral=True)
+                except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                    await interaction.followup.send(f"Removed the {role.name} role.", ephemeral=True)
             else:
                 await member.add_roles(role, reason="Role menu selection")
-                await interaction.response.send_message(f"Added the {role.name} role.", ephemeral=True)
+                try:
+                    await interaction.response.send_message(f"Added the {role.name} role.", ephemeral=True)
+                except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                    await interaction.followup.send(f"Added the {role.name} role.", ephemeral=True)
                 
         except disnake.Forbidden:
-            await interaction.response.send_message("I don't have permission to manage these roles.", ephemeral=True)
+            try:
+                await interaction.response.send_message("I don't have permission to manage these roles.", ephemeral=True)
+            except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                await interaction.followup.send("I don't have permission to manage these roles.", ephemeral=True)
         except Exception as e:
             logger.error(f"Error in role button callback: {e}", exc_info=True)
-            await interaction.response.send_message(f"Error managing roles: {str(e)}", ephemeral=True)
+            try:
+                await interaction.response.send_message(f"Error managing roles: {str(e)}", ephemeral=True)
+            except (disnake.errors.InteractionResponded, disnake.errors.HTTPException):
+                await interaction.followup.send(f"Error managing roles: {str(e)}", ephemeral=True)
 
 
 class RoleSelectionView(disnake.ui.View):
@@ -220,11 +252,11 @@ class RoleSelectionView(disnake.ui.View):
     name="create_role_menu",
     description="Create an embed message with role selection buttons"
 )
-async def create_role_menu(
+async def cmd_create_role_menu(
     inter: disnake.ApplicationCommandInteraction,
     message: str = commands.Param(description="Message to display in the embed"),
     exclusive: bool = commands.Param(description="Whether roles are mutually exclusive (true) or multiple can be selected (false)"),
-    roles: str = commands.Param(description="List of role IDs separated by spaces, use | to create a new line of buttons"),
+    roles: str = commands.Param(description="List of role mentions or IDs separated by spaces, use | to create a new line of buttons"),
     title: str = commands.Param(description="Title for the embed", default="Role Selection")
 ):
     """Create an embed with buttons for users to self-assign roles."""
@@ -240,17 +272,34 @@ async def create_role_menu(
         role_groups = []
         for group in roles.split("|"):
             role_ids = []
-            for role_id_str in group.strip().split():
+            for role_str in group.strip().split():
                 try:
-                    role_id = int(role_id_str)
+                    # Check if it's a role mention (<@&ROLE_ID>)
+                    if role_str.startswith("<@&") and role_str.endswith(">"):
+                        # Extract the role ID from the mention
+                        role_id_str = role_str[3:-1]  # Remove <@& and >
+                        try:
+                            role_id = int(role_id_str)
+                        except ValueError:
+                            await inter.followup.send(f"Warning: '{role_str}' contains an invalid role ID.", ephemeral=True)
+                            continue
+                    else:
+                        # Try to parse as a direct role ID
+                        try:
+                            role_id = int(role_str)
+                        except ValueError:
+                            await inter.followup.send(f"Warning: '{role_str}' is not a valid role ID or mention.", ephemeral=True)
+                            continue
+                    
                     # Verify the role exists
                     role = inter.guild.get_role(role_id)
                     if role:
                         role_ids.append(role_id)
                     else:
                         await inter.followup.send(f"Warning: Role with ID {role_id} not found.", ephemeral=True)
-                except ValueError:
-                    await inter.followup.send(f"Warning: '{role_id_str}' is not a valid role ID.", ephemeral=True)
+                except Exception as e:
+                    logger.error(f"Error parsing role '{role_str}': {e}")
+                    await inter.followup.send(f"Warning: Error parsing '{role_str}'. Please use valid role mentions or IDs.", ephemeral=True)
             if role_ids:
                 role_groups.append(role_ids)
         
@@ -300,7 +349,8 @@ async def create_role_menu(
         
         # Store the role menu configuration in the database
         for i, msg_id in enumerate(message_ids):
-            await create_role_menu(
+            await safe_db_operation(
+                create_role_menu,
                 message_id=msg_id,
                 guild_id=inter.guild.id,
                 channel_id=inter.channel.id,

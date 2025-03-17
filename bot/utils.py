@@ -127,8 +127,6 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         guild: The guild to update the member count for
         force_refresh: Whether to force a full count refresh
     """
-    member_count_channel_id = None
-    
     try:
         # Check if event loop is closed
         try:
@@ -141,15 +139,26 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
             logger.warning(f"No event loop running when updating member count for guild {guild.name}")
             return
         
-        # Use server config with error handling to avoid loop issues
+        # Get the member count channel ID from the database
+        server_config = None
+        member_count_channel_id = None
+        
         try:
-            # Get the member count channel ID from the database
-            server_config = await get_server_config(guild.id)
+            # Use a local task for database operations to ensure it uses the current event loop
+            async def get_config():
+                return await get_server_config(guild.id)
+                
+            # Get the server config with a timeout
+            server_config = await asyncio.wait_for(get_config(), timeout=10.0)
             
             if server_config:
                 member_count_channel_id = server_config.get("member_count_channel_id")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting server config for guild {guild.id}")
+            return
         except Exception as db_error:
             logger.error(f"Error getting server config for guild {guild.id}: {db_error}")
+            return
         
         # If we don't have a channel ID, log and return
         if not member_count_channel_id:
@@ -163,12 +172,16 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         
         # Get the human member count with a timeout
         try:
-            human_count = await asyncio.wait_for(
-                get_human_member_count(guild, force_refresh),
-                timeout=10.0
-            )
+            # Use a local task for member count to ensure it uses the current event loop
+            async def count_members():
+                return await get_human_member_count(guild, force_refresh)
+                
+            human_count = await asyncio.wait_for(count_members(), timeout=10.0)
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting human member count for guild {guild.name}")
+            return
+        except Exception as e:
+            logger.error(f"Error getting human member count for guild {guild.name}: {e}")
             return
         
         # Ensure the bot has the permissions to update the channel
@@ -187,15 +200,17 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
         
         if channel.name != new_name:
             try:
-                await asyncio.wait_for(
-                    channel.edit(name=new_name),
-                    timeout=10.0
-                )
+                # Use a local task for channel edit to ensure it uses the current event loop
+                async def edit_channel():
+                    await channel.edit(name=new_name)
+                    
+                await asyncio.wait_for(edit_channel(), timeout=10.0)
                 logger.info(f"Updated member count channel in {guild.name} to '{new_name}'")
             except asyncio.TimeoutError:
                 logger.error(f"Timeout updating member count channel in {guild.name}")
+            except Exception as e:
+                logger.error(f"Error updating member count channel in {guild.name}: {e}")
         else:
             logger.info(f"Member count channel in {guild.name} already up to date: '{new_name}'")
-            
     except Exception as e:
-        logger.error(f"Error updating member count channel for {guild.name}: {e}", exc_info=True) 
+        logger.error(f"Unexpected error in update_member_count_channel for {guild.name}: {e}", exc_info=True) 

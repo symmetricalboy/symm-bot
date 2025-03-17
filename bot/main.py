@@ -26,6 +26,11 @@ async def init_modules():
     # Initialize database
     logger.info("Initializing database...")
     await database.init_db()
+    
+    # Store a reference to the main database engine in the bot object
+    # This will help properly identify which engines are shared vs. local
+    bot.db_engine = database.engine
+    
     logger.info("Database initialization completed")
 
 # Setup for persistent views

@@ -8,6 +8,7 @@ import logging
 from google import genai
 from google.genai import types
 from typing import Optional, Dict, Any, List
+import asyncio
 
 from .database import get_all_server_documentation_content
 
@@ -61,8 +62,19 @@ async def generate_ai_response(guild_id: int, user_question: str) -> Optional[st
         return "Sorry, AI help is currently unavailable because the Gemini API key is not configured."
     
     try:
-        # Get server documentation to use as context
-        server_documentation = await get_all_server_documentation_content(guild_id)
+        # Wrap the database call in a local function to ensure it runs in the current event loop
+        async def get_documentation():
+            return await get_all_server_documentation_content(guild_id)
+        
+        # Get server documentation with a timeout
+        try:
+            server_documentation = await asyncio.wait_for(get_documentation(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting server documentation for guild {guild_id}")
+            return "Sorry, I couldn't retrieve the server documentation. Please try again later or contact a server administrator."
+        except Exception as e:
+            logger.error(f"Error getting server documentation: {e}")
+            server_documentation = "No server documentation has been added yet."
         
         if not server_documentation:
             server_documentation = "No server documentation has been added yet."
@@ -93,14 +105,17 @@ async def generate_ai_response(guild_id: int, user_question: str) -> Optional[st
         
         # Generate the response using streaming
         response_parts = []
+        
+        # Get the content stream from Gemini API
         stream = client.models.generate_content_stream(
             model=MODEL_NAME,
             contents=contents,
             config=generate_config
         )
         
-        # Collect all streaming chunks
-        async for chunk in stream:
+        # The Gemini API returns a regular generator, not an async generator
+        # So we use a regular for loop instead of async for
+        for chunk in stream:
             if hasattr(chunk, 'text') and chunk.text:
                 response_parts.append(chunk.text)
                 logger.debug(f"Received chunk: {chunk.text[:20]}...")

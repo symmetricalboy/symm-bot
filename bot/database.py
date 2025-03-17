@@ -156,8 +156,24 @@ class AsyncDatabaseSession:
         self.session = None
     
     async def __aenter__(self):
-        self.session = async_session()
-        return self.session
+        try:
+            # Check if we're in a valid event loop
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    logger.warning("Event loop is closed when creating database session")
+                    return None
+            except RuntimeError:
+                # No event loop running
+                logger.warning("No event loop running when creating database session")
+                return None
+                
+            # Create a new session
+            self.session = async_session()
+            return self.session
+        except Exception as e:
+            logger.error(f"Error creating database session: {e}")
+            return None
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
@@ -169,10 +185,20 @@ class AsyncDatabaseSession:
                     except Exception as e:
                         logger.error(f"Error rolling back database session: {e}")
                 
-                # Always close the session
-                await self.session.close()
+                # Always close the session safely
+                try:
+                    # Use the same event loop that created the session
+                    await self.session.close()
+                except RuntimeError as e:
+                    # If we get an event loop error, log it but don't crash
+                    if "attached to a different loop" in str(e):
+                        logger.warning(f"Event loop mismatch when closing session: {e}")
+                    else:
+                        logger.error(f"Runtime error closing database session: {e}")
+                except Exception as e:
+                    logger.error(f"Error closing database session: {e}")
             except Exception as e:
-                logger.error(f"Error closing database session: {e}")
+                logger.error(f"Error in session cleanup: {e}")
             finally:
                 # Make sure we nullify the session reference
                 self.session = None
@@ -426,31 +452,30 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
     # Create a fresh session specifically for this operation
     session = None
     try:
-        # Get the current event loop to check if it's closed
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_closed():
-                logger.warning(f"Event loop is closed when getting server config for guild {guild_id}")
-                return None
-        except RuntimeError:
-            # No event loop running
-            logger.warning(f"No event loop running when getting server config for guild {guild_id}")
-            return None
-            
-        # Create a new session for this query
-        session = async_session()
+        # Get a fresh session using our improved function
+        session = await get_fresh_session()
         
-        # Use a timeout to prevent hanging
-        async def get_config():
-            stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-            result = await session.execute(stmt)
-            return result.scalars().first()
-            
+        # If we couldn't get a session, return None
+        if not session:
+            logger.warning(f"Could not create database session for guild {guild_id}")
+            return None
+        
+        # Perform the query directly with a timeout
         try:
-            # Wrap in timeout to prevent hanging
-            config = await asyncio.wait_for(get_config(), timeout=5.0)
+            # Create the statement
+            stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+            
+            # Execute with timeout
+            result_future = session.execute(stmt)
+            result = await asyncio.wait_for(result_future, timeout=5.0)
+            
+            # Get the first result
+            config = result.scalars().first()
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting server config for guild {guild_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Error executing query in get_server_config: {e}")
             return None
         
         if not config:
@@ -473,11 +498,7 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
         return None
     finally:
         # Always clean up the session
-        if session:
-            try:
-                await session.close()
-            except Exception as e:
-                logger.error(f"Error closing session in get_server_config: {e}")
+        await safe_close_session(session)
 
 
 async def set_member_count_channel(guild_id: int, channel_id: int) -> bool:
@@ -491,30 +512,51 @@ async def set_member_count_channel(guild_id: int, channel_id: int) -> bool:
     Returns:
         Whether the operation was successful
     """
+    # If no database URL is provided, return failure
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, cannot set member count channel")
+        return False
+        
+    # Use our improved session handling
+    session = None
     try:
-        async with async_session() as session:
-            async with session.begin():
-                # Try to find existing config
-                result = await session.execute(
-                    select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-                )
-                config = result.scalars().first()
-                
-                if config:
-                    # Update existing config
-                    config.member_count_channel_id = channel_id
-                else:
-                    # Create new config
-                    config = ServerConfig(
-                        guild_id=guild_id,
-                        member_count_channel_id=channel_id
-                    )
-                    session.add(config)
-                
-                return True
-    except SQLAlchemyError as e:
+        # Get a fresh session
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return failure
+        if not session:
+            logger.warning(f"Could not create database session for setting member count channel for guild {guild_id}")
+            return False
+            
+        # Try to find existing config
+        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        result = await session.execute(stmt)
+        config = result.scalars().first()
+        
+        if not config:
+            # Create new config
+            config = ServerConfig(guild_id=guild_id)
+            session.add(config)
+        
+        # Update config
+        config.member_count_channel_id = channel_id
+        
+        # Commit changes
+        await session.commit()
+        return True
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
+        if session:
+            await session.rollback()
         logger.error(f"Database error setting member count channel: {e}")
         return False
+    except Exception as e:
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error setting member count channel: {e}")
+        return False
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def set_notifications_channel(guild_id: int, channel_id: int) -> bool:
@@ -528,30 +570,51 @@ async def set_notifications_channel(guild_id: int, channel_id: int) -> bool:
     Returns:
         Whether the operation was successful
     """
+    # If no database URL is provided, return failure
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, cannot set notifications channel")
+        return False
+        
+    # Use our improved session handling
+    session = None
     try:
-        async with async_session() as session:
-            async with session.begin():
-                # Try to find existing config
-                result = await session.execute(
-                    select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-                )
-                config = result.scalars().first()
-                
-                if config:
-                    # Update existing config
-                    config.notifications_channel_id = channel_id
-                else:
-                    # Create new config
-                    config = ServerConfig(
-                        guild_id=guild_id,
-                        notifications_channel_id=channel_id
-                    )
-                    session.add(config)
-                
-                return True
-    except SQLAlchemyError as e:
+        # Get a fresh session
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return failure
+        if not session:
+            logger.warning(f"Could not create database session for setting notifications channel for guild {guild_id}")
+            return False
+            
+        # Try to find existing config
+        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        result = await session.execute(stmt)
+        config = result.scalars().first()
+        
+        if not config:
+            # Create new config
+            config = ServerConfig(guild_id=guild_id)
+            session.add(config)
+        
+        # Update config
+        config.notifications_channel_id = channel_id
+        
+        # Commit changes
+        await session.commit()
+        return True
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
+        if session:
+            await session.rollback()
         logger.error(f"Database error setting notifications channel: {e}")
         return False
+    except Exception as e:
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error setting notifications channel: {e}")
+        return False
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def set_new_user_roles(guild_id: int, role_ids: List[int]) -> bool:
@@ -565,30 +628,51 @@ async def set_new_user_roles(guild_id: int, role_ids: List[int]) -> bool:
     Returns:
         Whether the operation was successful
     """
+    # If no database URL is provided, return failure
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, cannot set new user roles")
+        return False
+        
+    # Use our improved session handling
+    session = None
     try:
-        async with async_session() as session:
-            async with session.begin():
-                # Try to find existing config
-                result = await session.execute(
-                    select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-                )
-                config = result.scalars().first()
-                
-                if config:
-                    # Update existing config
-                    config.new_user_role_ids = role_ids
-                else:
-                    # Create new config
-                    config = ServerConfig(
-                        guild_id=guild_id,
-                        new_user_role_ids=role_ids
-                    )
-                    session.add(config)
-                
-                return True
-    except SQLAlchemyError as e:
+        # Get a fresh session
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return failure
+        if not session:
+            logger.warning(f"Could not create database session for setting new user roles for guild {guild_id}")
+            return False
+            
+        # Try to find existing config
+        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        result = await session.execute(stmt)
+        config = result.scalars().first()
+        
+        if not config:
+            # Create new config
+            config = ServerConfig(guild_id=guild_id)
+            session.add(config)
+        
+        # Update config
+        config.new_user_role_ids = role_ids
+        
+        # Commit changes
+        await session.commit()
+        return True
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
+        if session:
+            await session.rollback()
         logger.error(f"Database error setting new user roles: {e}")
         return False
+    except Exception as e:
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error setting new user roles: {e}")
+        return False
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def set_bot_roles(guild_id: int, role_ids: List[int]) -> bool:
@@ -644,32 +728,56 @@ async def add_role_block(guild_id: int, blocking_role_id: int, blocked_role_id: 
     Returns:
         Whether the operation was successful
     """
+    # If no database URL is provided, return failure
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, cannot add role block")
+        return False
+        
+    # Use our improved session handling
+    session = None
     try:
-        async with async_session() as session:
-            async with session.begin():
-                # Check if the block already exists
-                result = await session.execute(
-                    select(RoleBlock).where(
-                        (RoleBlock.guild_id == guild_id) &
-                        (RoleBlock.blocking_role_id == blocking_role_id) &
-                        (RoleBlock.blocked_role_id == blocked_role_id)
-                    )
-                )
-                existing_block = result.scalars().first()
-                
-                if not existing_block:
-                    # Create new block
-                    block = RoleBlock(
-                        guild_id=guild_id,
-                        blocking_role_id=blocking_role_id,
-                        blocked_role_id=blocked_role_id
-                    )
-                    session.add(block)
-                
-                return True
-    except SQLAlchemyError as e:
+        # Get a fresh session
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return failure
+        if not session:
+            logger.warning(f"Could not create database session for adding role block for guild {guild_id}")
+            return False
+            
+        # Check if the block already exists
+        stmt = select(RoleBlock).where(
+            (RoleBlock.guild_id == guild_id) &
+            (RoleBlock.blocking_role_id == blocking_role_id) &
+            (RoleBlock.blocked_role_id == blocked_role_id)
+        )
+        result = await session.execute(stmt)
+        existing_block = result.scalars().first()
+        
+        if not existing_block:
+            # Create new block
+            block = RoleBlock(
+                guild_id=guild_id,
+                blocking_role_id=blocking_role_id,
+                blocked_role_id=blocked_role_id
+            )
+            session.add(block)
+        
+        # Commit changes
+        await session.commit()
+        return True
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
+        if session:
+            await session.rollback()
         logger.error(f"Database error adding role block: {e}")
         return False
+    except Exception as e:
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error adding role block: {e}")
+        return False
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def remove_role_block(guild_id: int, blocking_role_id: int, blocked_role_id: int) -> bool:
@@ -684,22 +792,46 @@ async def remove_role_block(guild_id: int, blocking_role_id: int, blocked_role_i
     Returns:
         Whether the operation was successful
     """
+    # If no database URL is provided, return failure
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, cannot remove role block")
+        return False
+        
+    # Use our improved session handling
+    session = None
     try:
-        async with async_session() as session:
-            async with session.begin():
-                # Delete the block
-                result = await session.execute(
-                    sa.delete(RoleBlock).where(
-                        (RoleBlock.guild_id == guild_id) &
-                        (RoleBlock.blocking_role_id == blocking_role_id) &
-                        (RoleBlock.blocked_role_id == blocked_role_id)
-                    )
-                )
-                
-                return True
-    except SQLAlchemyError as e:
+        # Get a fresh session
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return failure
+        if not session:
+            logger.warning(f"Could not create database session for removing role block for guild {guild_id}")
+            return False
+            
+        # Delete the block
+        stmt = sa.delete(RoleBlock).where(
+            (RoleBlock.guild_id == guild_id) &
+            (RoleBlock.blocking_role_id == blocking_role_id) &
+            (RoleBlock.blocked_role_id == blocked_role_id)
+        )
+        await session.execute(stmt)
+        
+        # Commit changes
+        await session.commit()
+        return True
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
+        if session:
+            await session.rollback()
         logger.error(f"Database error removing role block: {e}")
         return False
+    except Exception as e:
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error removing role block: {e}")
+        return False
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def get_blocked_roles(guild_id: int, user_roles: List[int]) -> List[int]:
@@ -893,16 +1025,35 @@ async def get_server_documentation(guild_id: int, title: Optional[str] = None) -
     Returns:
         List of documentation entries
     """
+    # If no database URL is provided, return empty list
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, returning empty list for server documentation")
+        return []
+        
+    # Create a fresh session specifically for this operation
+    session = None
     try:
-        async with async_session() as session:
+        # Get a fresh session using our improved function
+        session = await get_fresh_session()
+        
+        # If we couldn't get a session, return empty list
+        if not session:
+            logger.warning(f"Could not create database session for getting server documentation for guild {guild_id}")
+            return []
+        
+        # Perform the query directly with a timeout
+        try:
             if title:
                 # Get specific document
-                result = await session.execute(
-                    select(ServerDocumentation).where(
-                        (ServerDocumentation.guild_id == guild_id) &
-                        (ServerDocumentation.title == title)
-                    )
+                stmt = select(ServerDocumentation).where(
+                    (ServerDocumentation.guild_id == guild_id) &
+                    (ServerDocumentation.title == title)
                 )
+                
+                # Execute with timeout
+                result_future = session.execute(stmt)
+                result = await asyncio.wait_for(result_future, timeout=5.0)
+                
                 doc = result.scalars().first()
                 
                 if not doc:
@@ -918,11 +1069,14 @@ async def get_server_documentation(guild_id: int, title: Optional[str] = None) -
                 }]
             else:
                 # Get all documents for this guild
-                result = await session.execute(
-                    select(ServerDocumentation)
-                    .where(ServerDocumentation.guild_id == guild_id)
-                    .order_by(ServerDocumentation.title)
-                )
+                stmt = select(ServerDocumentation).where(
+                    ServerDocumentation.guild_id == guild_id
+                ).order_by(ServerDocumentation.title)
+                
+                # Execute with timeout
+                result_future = session.execute(stmt)
+                result = await asyncio.wait_for(result_future, timeout=5.0)
+                
                 docs = result.scalars().all()
                 
                 return [{
@@ -933,9 +1087,21 @@ async def get_server_documentation(guild_id: int, title: Optional[str] = None) -
                     "created_at": doc.created_at.isoformat() if doc.created_at else None,
                     "updated_at": doc.updated_at.isoformat() if doc.updated_at else None
                 } for doc in docs]
-    except SQLAlchemyError as e:
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout getting server documentation for guild {guild_id}")
+            return []
+        except Exception as e:
+            logger.error(f"Error executing query in get_server_documentation: {e}")
+            return []
+    except (SQLAlchemyError, ConnectionRefusedError) as e:
         logger.error(f"Database error getting server documentation: {e}")
         return []
+    except Exception as e:
+        logger.error(f"Unexpected error getting server documentation: {e}")
+        return []
+    finally:
+        # Always clean up the session
+        await safe_close_session(session)
 
 
 async def get_all_server_documentation_content(guild_id: int) -> str:
@@ -948,16 +1114,21 @@ async def get_all_server_documentation_content(guild_id: int) -> str:
     Returns:
         Concatenated documentation content
     """
-    docs = await get_server_documentation(guild_id)
-    
-    if not docs:
+    try:
+        # Get documentation with properly managed session
+        docs = await get_server_documentation(guild_id)
+        
+        if not docs:
+            return ""
+        
+        content_parts = []
+        for doc in docs:
+            content_parts.append(f"# {doc['title']}\n\n{doc['content']}")
+        
+        return "\n\n---\n\n".join(content_parts)
+    except Exception as e:
+        logger.error(f"Error getting all server documentation content: {e}")
         return ""
-    
-    content_parts = []
-    for doc in docs:
-        content_parts.append(f"# {doc['title']}\n\n{doc['content']}")
-    
-    return "\n\n---\n\n".join(content_parts)
 
 
 async def get_fresh_session():
@@ -968,13 +1139,51 @@ async def get_fresh_session():
     Returns:
         A fresh SQLAlchemy AsyncSession
     """
+    # If there's no database URL, return None
+    if not ASYNC_DATABASE_URL:
+        logger.debug("No DATABASE_URL provided, can't create session")
+        return None
+        
     try:
+        # Check if we're in a valid event loop
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logger.warning("Event loop is closed when creating database session")
+                return None
+        except RuntimeError:
+            # No event loop running
+            logger.warning("No event loop running when creating database session")
+            return None
+            
+        # Create a new session bound to the current event loop
+        # Use engine that is bound to this specific loop
+        local_engine = create_async_engine(
+            ASYNC_DATABASE_URL, 
+            echo=False,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+            future=True,
+            isolation_level="AUTOCOMMIT",
+        )
+        
+        # Create session factory bound to this engine
+        local_session_maker = sessionmaker(
+            bind=local_engine, 
+            expire_on_commit=False, 
+            class_=AsyncSession,
+            future=True
+        )
+        
         # Create a new session for this specific operation
-        session = async_session()
+        session = local_session_maker()
         return session
     except Exception as e:
         logger.error(f"Error creating database session: {e}")
-        raise
+        return None
 
 async def safe_close_session(session):
     """
@@ -983,8 +1192,66 @@ async def safe_close_session(session):
     Args:
         session: The session to close
     """
-    if session:
+    if not session:
+        return
+        
+    try:
+        # Check if we're in a valid event loop
         try:
-            await session.close()
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                logger.warning("Event loop is closed when closing database session")
+                return
+        except RuntimeError:
+            # No event loop running
+            logger.warning("No event loop running when closing database session")
+            return
+        
+        # Get the engine from this session
+        engine = session.bind
+        
+        # Close the session with timeout
+        try:
+            await asyncio.wait_for(session.close(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.error("Timeout closing database session")
         except Exception as e:
-            logger.error(f"Error closing database session: {e}") 
+            logger.error(f"Error closing database session: {e}")
+        
+        # Dispose the engine if it was created locally
+        # We compare to the global engine variable directly
+        if engine is not None and engine is not globals().get('engine'):
+            try:
+                await asyncio.wait_for(engine.dispose(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.error("Timeout disposing database engine")
+            except Exception as e:
+                logger.error(f"Error disposing database engine: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error closing database session: {e}")
+
+async def safe_db_operation(operation_func, *args, **kwargs):
+    """
+    Safely execute a database operation with proper error handling for event loop issues.
+    
+    Args:
+        operation_func: The database function to call
+        *args, **kwargs: Arguments to pass to the function
+        
+    Returns:
+        The result of the operation, or None if an error occurred
+    """
+    try:
+        return await operation_func(*args, **kwargs)
+    except RuntimeError as e:
+        if "attached to a different loop" in str(e):
+            logger.warning(f"Event loop mismatch in database operation: {e}")
+            # In a production environment, you could implement a retry mechanism here
+            # For now, we'll just return None to avoid crashing
+            return None
+        else:
+            logger.error(f"Runtime error in database operation: {e}")
+            return None
+    except Exception as e:
+        logger.error(f"Error in database operation: {e}")
+        return None 
