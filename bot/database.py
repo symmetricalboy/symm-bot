@@ -1242,13 +1242,62 @@ async def safe_db_operation(operation_func, *args, **kwargs):
         The result of the operation, or None if an error occurred
     """
     try:
+        # First, try to execute normally
         return await operation_func(*args, **kwargs)
     except RuntimeError as e:
         if "attached to a different loop" in str(e):
             logger.warning(f"Event loop mismatch in database operation: {e}")
-            # In a production environment, you could implement a retry mechanism here
-            # For now, we'll just return None to avoid crashing
-            return None
+            
+            # Create a new event loop for this operation
+            try:
+                # Get the current event loop or create a new one
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No running event loop
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                # Create a future in the current event loop
+                future = loop.create_future()
+                
+                # Define a callback to set the result
+                def set_result(result):
+                    if not future.done():
+                        loop.call_soon_threadsafe(future.set_result, result)
+                
+                # Run the operation in a separate thread
+                def run_in_thread():
+                    # Create a new event loop for this thread
+                    thread_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(thread_loop)
+                    
+                    try:
+                        # Run the operation in this thread's event loop
+                        result = thread_loop.run_until_complete(operation_func(*args, **kwargs))
+                        set_result(result)
+                    except Exception as thread_e:
+                        logger.error(f"Error in thread-based database operation: {thread_e}")
+                        set_result(None)
+                    finally:
+                        thread_loop.close()
+                
+                # Start a new thread for this operation
+                import threading
+                thread = threading.Thread(target=run_in_thread)
+                thread.daemon = True
+                thread.start()
+                
+                # Wait for the result with a timeout
+                try:
+                    return await asyncio.wait_for(future, timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.error("Timeout waiting for database operation")
+                    return None
+                
+            except Exception as retry_e:
+                logger.error(f"Error in thread-based retry mechanism: {retry_e}")
+                return None
         else:
             logger.error(f"Runtime error in database operation: {e}")
             return None
