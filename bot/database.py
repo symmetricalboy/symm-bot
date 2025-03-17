@@ -4,7 +4,8 @@ Database module for PostgreSQL connection and operations.
 import os
 import logging
 import asyncio
-from typing import Optional, List, Dict, Any, Union
+import time
+from typing import Optional, List, Dict, Any, Union, Callable
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -26,21 +27,22 @@ else:
 # SQLAlchemy Base class for declarative models
 Base = declarative_base()
 
-# Create async engine
+# Create async engine with proper connection handling for event loops
 engine = create_async_engine(
     ASYNC_DATABASE_URL, 
     echo=False,  # Set to True for SQL query logging
-    pool_size=5,
-    max_overflow=10,
+    pool_size=10,  # Increased pool size
+    max_overflow=20,  # Increased max overflow
     pool_timeout=30,
     pool_recycle=1800,  # Recycle connections after 30 minutes
-    # Use this event loop
+    pool_pre_ping=True,  # Check connection validity before using it
     future=True,
+    isolation_level="AUTOCOMMIT",  # Use autocommit to avoid transaction conflicts
 )
 
 # Session factory with better async handling
 async_session = sessionmaker(
-    engine, 
+    bind=engine, 
     expire_on_commit=False, 
     class_=AsyncSession,
     future=True
@@ -384,18 +386,20 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
     Returns:
         Dictionary with server configuration, or None if not found
     """
-    # Create a new session for each request to avoid loop conflicts
+    # Create a fresh session specifically for this operation
     session = None
     try:
-        session = async_session()
-        result = await session.execute(
-            select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-        )
+        session = await get_fresh_session()
+        
+        # Use a simple, direct query to minimize chances of conflicts
+        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        result = await session.execute(stmt)
         config = result.scalars().first()
         
         if not config:
             return None
             
+        # Convert to dictionary to avoid session dependency
         return {
             "id": config.id,
             "guild_id": config.guild_id,
@@ -411,11 +415,7 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
         return None
     finally:
         # Always close session to avoid leaks
-        if session:
-            try:
-                await session.close()
-            except Exception as e:
-                logger.error(f"Error closing database session: {e}")
+        await safe_close_session(session)
 
 
 async def set_member_count_channel(guild_id: int, channel_id: int) -> bool:
@@ -587,47 +587,45 @@ async def migrate_env_to_db(
     Returns:
         Whether the operation was successful
     """
-    # Create a direct session to avoid asyncio loop issues
+    # Create a fresh session for this specific operation
     session = None
     try:
-        session = async_session()
-        # Start transaction
-        async with session.begin():
-            # Try to find existing config
-            result = await session.execute(
-                select(ServerConfig).where(ServerConfig.guild_id == guild_id)
-            )
-            config = result.scalars().first()
-            
-            if not config:
-                # Create new config
-                config = ServerConfig(guild_id=guild_id)
-                session.add(config)
-            
-            # Update only provided fields
-            if member_count_channel_id is not None:
-                config.member_count_channel_id = member_count_channel_id
-                
-            if notifications_channel_id is not None:
-                config.notifications_channel_id = notifications_channel_id
-                
-            if new_user_role_ids is not None:
-                config.new_user_role_ids = new_user_role_ids
-                
-            if bot_role_ids is not None:
-                config.bot_role_ids = bot_role_ids
+        session = await get_fresh_session()
         
+        # Get existing config or create new one
+        stmt = select(ServerConfig).where(ServerConfig.guild_id == guild_id)
+        result = await session.execute(stmt)
+        config = result.scalars().first()
+        
+        if not config:
+            # Create new config
+            config = ServerConfig(guild_id=guild_id)
+            session.add(config)
+        
+        # Update only provided fields
+        if member_count_channel_id is not None:
+            config.member_count_channel_id = member_count_channel_id
+            
+        if notifications_channel_id is not None:
+            config.notifications_channel_id = notifications_channel_id
+            
+        if new_user_role_ids is not None:
+            config.new_user_role_ids = new_user_role_ids
+            
+        if bot_role_ids is not None:
+            config.bot_role_ids = bot_role_ids
+        
+        # Commit changes
+        await session.commit()
         return True
     except SQLAlchemyError as e:
         logger.error(f"Database error migrating env to db: {e}")
+        if session:
+            await session.rollback()
         return False
     finally:
         # Always close session to avoid leaks
-        if session:
-            try:
-                await session.close()
-            except Exception as e:
-                logger.error(f"Error closing database session: {e}")
+        await safe_close_session(session)
 
 
 # Role blocking operations
@@ -957,4 +955,34 @@ async def get_all_server_documentation_content(guild_id: int) -> str:
     for doc in docs:
         content_parts.append(f"# {doc['title']}\n\n{doc['content']}")
     
-    return "\n\n---\n\n".join(content_parts) 
+    return "\n\n---\n\n".join(content_parts)
+
+
+async def get_fresh_session():
+    """
+    Get a fresh database session that will work reliably across different async tasks.
+    This function should be used instead of directly creating a session or using db_session.
+    
+    Returns:
+        A fresh SQLAlchemy AsyncSession
+    """
+    try:
+        # Create a new session for this specific operation
+        session = async_session()
+        return session
+    except Exception as e:
+        logger.error(f"Error creating database session: {e}")
+        raise
+
+async def safe_close_session(session):
+    """
+    Safely close a database session, handling any exceptions.
+    
+    Args:
+        session: The session to close
+    """
+    if session:
+        try:
+            await session.close()
+        except Exception as e:
+            logger.error(f"Error closing database session: {e}") 

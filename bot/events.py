@@ -59,12 +59,18 @@ async def on_member_join(member: disnake.Member):
     try:
         guild = member.guild
         
-        # Get server configuration from database
-        server_config = await get_server_config(guild.id)
+        # Get server configuration from database - wrap in try/except
+        server_config = None
+        try:
+            server_config = await get_server_config(guild.id)
+        except Exception as e:
+            logger.error(f"Error getting server config in on_member_join: {e}")
+            # Continue with defaults
         
         # Get role IDs from database or fall back to environment variables
         new_user_role_ids = []
         bot_role_ids = []
+        notifications_channel_id = None
         
         if server_config:
             # Use database configuration
@@ -103,11 +109,12 @@ async def on_member_join(member: disnake.Member):
                     logger.info(f"Assigned roles to bot {member.name} in {guild.name}")
             
             # Send notification message for bot joins
-            notifications_channel = bot.get_channel(notifications_channel_id)
-            if notifications_channel:
-                await notifications_channel.send(f"Bot {member.name} has joined the server.")
-            else:
-                logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
+            if notifications_channel_id:
+                notifications_channel = bot.get_channel(notifications_channel_id)
+                if notifications_channel:
+                    await notifications_channel.send(f"Bot {member.name} has joined the server.")
+                else:
+                    logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
             
             # Bots don't affect the human member count
         else:
@@ -128,17 +135,18 @@ async def on_member_join(member: disnake.Member):
                 logger.info(f"Assigned roles to {member.name} in {guild.name}")
             
             # Send welcome message for human users
-            notifications_channel = bot.get_channel(notifications_channel_id)
-            if notifications_channel:
-                await notifications_channel.send(f"Welcome to the server, {member.mention}!")
-            else:
-                logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
+            if notifications_channel_id:
+                notifications_channel = bot.get_channel(notifications_channel_id)
+                if notifications_channel:
+                    await notifications_channel.send(f"Welcome to the server, {member.mention}!")
+                else:
+                    logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
             
             # Increment the human member count
             increment_member_count(guild.id)
             
-            # Update the member count channel
-            await update_member_count_channel(guild, force_refresh=False)
+            # Update the member count channel in a background task to avoid blocking
+            bot.loop.create_task(update_member_count_channel(guild, force_refresh=False))
 
     except Exception as e:
         logger.error(f"Error in on_member_join: {e}", exc_info=True)  # Log with traceback
@@ -155,29 +163,37 @@ async def on_member_remove(member: disnake.Member):
         guild = member.guild
         logger.info(f"Member removed: {member.name} (ID: {member.id}) from {guild.name}")
         
-        # Get server configuration from database
-        server_config = await get_server_config(guild.id)
+        # Get server configuration from database - wrap in try/except
+        server_config = None
+        notifications_channel_id = None
         
-        # Get notifications channel ID from database or fall back to environment variable
-        if server_config:
-            notifications_channel_id = server_config.get("notifications_channel_id")
-        else:
+        try:
+            server_config = await get_server_config(guild.id)
+            if server_config:
+                notifications_channel_id = server_config.get("notifications_channel_id")
+        except Exception as e:
+            logger.error(f"Error getting server config in on_member_remove: {e}")
+            # Continue with default
+            
+        # If no config or no channel ID in config, fall back to environment variable
+        if not notifications_channel_id:
             from .config import NOTIFICATIONS_CHANNEL_ID
             notifications_channel_id = NOTIFICATIONS_CHANNEL_ID
         
         # Send goodbye message
-        notifications_channel = bot.get_channel(notifications_channel_id)
-        if notifications_channel:
-            await notifications_channel.send(f"{member.name} has left the server.")
-        else:
-            logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
+        if notifications_channel_id:
+            notifications_channel = bot.get_channel(notifications_channel_id)
+            if notifications_channel:
+                await notifications_channel.send(f"{member.name} has left the server.")
+            else:
+                logger.error(f"Notifications channel with ID {notifications_channel_id} not found in guild {guild.name}")
         
         # If the member is not a bot, decrement the human member count
         if not member.bot:
             decrement_member_count(guild.id)
         
-        # Update the member count channel
-        await update_member_count_channel(guild, force_refresh=False)
+        # Update the member count channel in a background task to avoid blocking
+        bot.loop.create_task(update_member_count_channel(guild, force_refresh=False))
 
     except Exception as e:
         logger.error(f"Error in on_member_remove: {e}", exc_info=True) 
