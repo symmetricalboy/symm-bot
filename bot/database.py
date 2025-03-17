@@ -34,13 +34,16 @@ engine = create_async_engine(
     max_overflow=10,
     pool_timeout=30,
     pool_recycle=1800,  # Recycle connections after 30 minutes
+    # Use this event loop
+    future=True,
 )
 
-# Session factory
+# Session factory with better async handling
 async_session = sessionmaker(
     engine, 
     expire_on_commit=False, 
-    class_=AsyncSession
+    class_=AsyncSession,
+    future=True
 )
 
 # Models
@@ -145,14 +148,62 @@ class ServerDocumentation(Base):
         return f"<ServerDocumentation id={self.id} title={self.title}>"
 
 
+class AsyncDatabaseSession:
+    """Context manager for safer database session handling."""
+    def __init__(self):
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = async_session()
+        return self.session
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            if exc_type:
+                await self.session.rollback()
+            try:
+                await self.session.close()
+            except Exception as e:
+                logger.error(f"Error closing database session: {e}")
+                
+# Create a reusable session context manager
+db_session = AsyncDatabaseSession
+
 # Database operations
 async def init_db():
     """Initialize the database by creating all tables."""
     try:
+        # Create a standalone connection for initialization to avoid loop conflicts
         async with engine.begin() as conn:
             # Create tables if they don't exist
             await conn.run_sync(Base.metadata.create_all)
             logger.info("Database initialized successfully")
+            
+            # Test if tables actually exist by executing simple queries
+            tables = [table.name for table in Base.metadata.tables.values()]
+            logger.info(f"Initialized tables: {tables}")
+            
+            # Verify server_configs table exists by running a simple query
+            try:
+                await conn.execute(sa.text("SELECT 1 FROM server_configs LIMIT 1"))
+                logger.info("Verified server_configs table exists")
+            except SQLAlchemyError as e:
+                logger.error(f"Verification of server_configs table failed: {e}")
+                # Try to create it specifically if it doesn't exist
+                await conn.execute(sa.text("""
+                CREATE TABLE IF NOT EXISTS server_configs (
+                    id SERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL UNIQUE,
+                    member_count_channel_id BIGINT,
+                    notifications_channel_id BIGINT,
+                    new_user_role_ids BIGINT[],
+                    bot_role_ids BIGINT[],
+                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT now(),
+                    updated_at TIMESTAMP WITHOUT TIME ZONE
+                )
+                """))
+                logger.info("Created server_configs table manually")
+            
     except SQLAlchemyError as e:
         logger.error(f"Database initialization failed: {e}")
         # Print out more detailed error information
@@ -334,7 +385,7 @@ async def get_server_config(guild_id: int) -> Optional[Dict[str, Any]]:
         Dictionary with server configuration, or None if not found
     """
     try:
-        async with async_session() as session:
+        async with db_session() as session:
             result = await session.execute(
                 select(ServerConfig).where(ServerConfig.guild_id == guild_id)
             )
@@ -528,7 +579,8 @@ async def migrate_env_to_db(
         Whether the operation was successful
     """
     try:
-        async with async_session() as session:
+        async with db_session() as session:
+            # Start transaction
             async with session.begin():
                 # Try to find existing config
                 result = await session.execute(
