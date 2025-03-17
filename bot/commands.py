@@ -35,7 +35,7 @@ async def handle_button_interactions(inter: disnake.MessageInteraction):
     Only handles orphaned buttons (those without active views).
     """
     # If this button is already handled by a view, skip it
-    if inter.message.id in bot._connection._view_store:
+    if bot._connection._view_store.get_view_for_message(inter.message.id) is not None:
         # This interaction already has a view, let the normal callback handle it
         return
         
