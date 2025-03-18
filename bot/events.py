@@ -42,13 +42,12 @@ async def initialize_member_counts():
         
         for guild in bot.guilds:
             try:
-                # Use a small timeout to prevent blocking during initialization
-                update_task = asyncio.create_task(update_member_count_channel(guild, force_refresh=True))
-                try:
-                    # Set a reasonable timeout for each guild's update
-                    await asyncio.wait_for(update_task, timeout=15.0)
-                except asyncio.TimeoutError:
-                    logger.error(f"Timeout while initializing member count for guild {guild.name}")
+                # Use gather with tasks that have been properly created
+                # This is more reliable than creating_task + wait_for pattern
+                logger.info(f"Initializing member count for guild {guild.name}")
+                
+                # Make sure we don't block the event loop for too long
+                await update_member_count_channel(guild, force_refresh=True)
                 
                 # Add a small delay between guilds to avoid rate limits
                 await asyncio.sleep(1)

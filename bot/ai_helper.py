@@ -103,26 +103,36 @@ async def generate_ai_response(guild_id: int, user_question: str) -> Optional[st
             ]
         )
         
-        # Generate the response using streaming
-        response_parts = []
+        # Define a function to process the stream in a separate thread to avoid blocking the event loop
+        def process_stream():
+            response_parts = []
+            try:
+                # Get the content stream from Gemini API
+                stream = client.models.generate_content_stream(
+                    model=MODEL_NAME,
+                    contents=contents,
+                    config=generate_config
+                )
+                
+                # Process the stream synchronously in the separate thread
+                for chunk in stream:
+                    if hasattr(chunk, 'text') and chunk.text:
+                        response_parts.append(chunk.text)
+                        logger.debug(f"Received chunk: {chunk.text[:20]}...")
+                
+                # Join all the response parts into a single string
+                full_response = "".join(response_parts)
+                logger.info(f"Generated AI response of length {len(full_response)} characters")
+                return full_response
+            except Exception as e:
+                logger.error(f"Error processing AI stream: {e}", exc_info=True)
+                return None
         
-        # Get the content stream from Gemini API
-        stream = client.models.generate_content_stream(
-            model=MODEL_NAME,
-            contents=contents,
-            config=generate_config
-        )
+        # Run the stream processing in a separate thread
+        full_response = await asyncio.to_thread(process_stream)
         
-        # The Gemini API returns a regular generator, not an async generator
-        # So we use a regular for loop instead of async for
-        for chunk in stream:
-            if hasattr(chunk, 'text') and chunk.text:
-                response_parts.append(chunk.text)
-                logger.debug(f"Received chunk: {chunk.text[:20]}...")
-        
-        # Join all the response parts into a single string
-        full_response = "".join(response_parts)
-        logger.info(f"Generated AI response of length {len(full_response)} characters")
+        if full_response is None:
+            return "Sorry, I encountered an error while generating a response."
         
         return full_response
         
