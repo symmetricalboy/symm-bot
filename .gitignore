@@ -3,3 +3,4 @@
 .venv/
 .env
 bot/__pycache__
+docs-temp.txt

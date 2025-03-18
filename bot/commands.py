@@ -11,7 +11,7 @@ from .database import (
     add_server_documentation, delete_server_documentation, get_server_documentation,
     safe_db_operation
 )
-from .ai_helper import generate_ai_response
+from .ai_helper import generate_ai_response, detect_general_knowledge_question
 
 logger = logging.getLogger(__name__)
 
@@ -1044,47 +1044,62 @@ async def view_docs(
         await inter.followup.send(f"Error viewing server documentation: {str(e)}", ephemeral=True)
 
 
-# Help command that uses AI to answer user questions
+# Help command that uses AI to answer user questions about server documentation
 @bot.slash_command(
     name="help",
-    description="Ask a question about the server and get an AI-powered answer"
+    description="Get help with server documentation and information"
 )
-async def help_command(
+async def server_help_command(
     inter: disnake.ApplicationCommandInteraction,
-    question: str = commands.Param(description="Your question about the server")
+    question: str = commands.Param(
+        description="What would you like to know about the server?"
+    ),
 ):
     """
-    Ask a question about the server and get an AI-powered answer.
-    The AI will use server documentation added by administrators to answer your question.
+    Get help with server documentation and information.
+    Uses AI to provide detailed answers based on server documentation.
     """
     await inter.response.defer()  # This might take a moment, so defer the response
     
     try:
         guild_id = inter.guild.id
+        channel_id = inter.channel.id
+        user_id = inter.author.id
+        user_name = inter.author.display_name
         
-        # Generate AI response
-        response = await generate_ai_response(guild_id, question)
+        # Check if this is likely a general knowledge question
+        is_general_knowledge = await detect_general_knowledge_question(question)
+        
+        # Generate AI response with the new personality
+        response = await generate_ai_response(
+            guild_id,
+            channel_id,
+            user_id,
+            user_name,
+            question,
+            is_general_knowledge
+        )
         
         if not response:
             await inter.followup.send(
-                "I'm sorry, I couldn't generate a response to your question. "
-                "Please try asking something else or contact a server administrator."
+                "O-oh my! I'm terribly sorry, but I couldn't generate a response to your question. "
+                "How embarrassing! Perhaps try asking something else? Or maybe a kind server administrator could assist you? (>_<)"
             )
             return
         
         # Create an embed for the response
         embed = disnake.Embed(
-            title=f"Q: {question}",
+            title="Server Documentation",
             description=response,
             color=disnake.Color.blurple()
         )
         
-        embed.set_footer(text="Powered by Gemini AI | Based on server documentation")
+        embed.set_footer(text="I'm the server butler! (^-^) Feel free to ask more questions!")
         
         await inter.followup.send(embed=embed)
-    
     except Exception as e:
         logger.error(f"Error in help command: {e}", exc_info=True)
         await inter.followup.send(
-            f"Sorry, I encountered an error while trying to answer your question: {str(e)}"
+            "Oh dear! H-how dreadfully embarrassing! I've encountered an error while trying to answer your question. "
+            "My sincerest apologies for the inconvenience! (ヽ(°〇°)ﾉ)"
         ) 

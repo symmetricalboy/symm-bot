@@ -5,6 +5,7 @@ from .config import bot
 from .utils import update_member_count_channel, increment_member_count, decrement_member_count
 from .tasks import member_count_updater
 from .database import get_server_config
+from .ai_helper import add_message_to_history, generate_ai_response, detect_general_knowledge_question
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,80 @@ async def on_ready():
     if not hasattr(bot, 'member_count_task') or bot.member_count_task.done():
         bot.member_count_task = bot.loop.create_task(member_count_updater())
         logger.info("Started member count updater task")
+
+@bot.event
+async def on_message(message: disnake.Message):
+    """
+    Processes incoming messages for message history tracking and bot responses.
+    
+    Args:
+        message: The Discord message
+    """
+    # Ignore messages from bots to prevent loops
+    if message.author.bot:
+        return
+    
+    try:
+        # Process commands first
+        await bot.process_commands(message)
+        
+        # Add message to history for context tracking
+        await add_message_to_history(
+            message.guild.id if message.guild else 0,
+            message.channel.id,
+            message.author.id,
+            message.author.display_name,
+            message.content
+        )
+        
+        # Check if the bot was mentioned or replied to
+        is_mentioned = bot.user in message.mentions
+        is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author.id == bot.user.id
+        
+        if is_mentioned or is_replied_to:
+            # Indicate that the bot is "typing"
+            async with message.channel.typing():
+                # Detect if this is a general knowledge question
+                is_general_knowledge = await detect_general_knowledge_question(message.content)
+                
+                # Generate AI response
+                response = await generate_ai_response(
+                    message.guild.id if message.guild else 0,
+                    message.channel.id,
+                    message.author.id,
+                    message.author.display_name,
+                    message.content,
+                    is_general_knowledge
+                )
+                
+                if response:
+                    # Send the response, possibly in chunks if it's too long
+                    if len(response) <= 2000:
+                        await message.reply(response)
+                    else:
+                        # Split into chunks of 2000 characters, being careful not to split in the middle of a sentence
+                        chunks = []
+                        current_chunk = ""
+                        
+                        for sentence in response.split('. '):
+                            if len(current_chunk) + len(sentence) + 2 <= 2000:  # +2 for ". "
+                                current_chunk += sentence + ". "
+                            else:
+                                chunks.append(current_chunk)
+                                current_chunk = sentence + ". "
+                        
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        
+                        # Send the first chunk as a reply
+                        if chunks:
+                            await message.reply(chunks[0])
+                            
+                            # Send the rest as normal messages
+                            for chunk in chunks[1:]:
+                                await message.channel.send(chunk)
+    except Exception as e:
+        logger.error(f"Error in on_message event: {e}", exc_info=True)
 
 async def initialize_member_counts():
     """Initializes member counts for all guilds in a background task."""
