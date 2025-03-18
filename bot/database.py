@@ -4,8 +4,7 @@ Database module for PostgreSQL connection and operations.
 import os
 import logging
 import asyncio
-import time
-from typing import Optional, List, Dict, Any, Union, Callable
+from typing import Optional, List, Dict, Any, Union
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -44,6 +43,14 @@ engine = create_async_engine(
 async_session = sessionmaker(
     bind=engine, 
     expire_on_commit=False, 
+    class_=AsyncSession,
+    future=True
+)
+
+# Create a global session maker that can be referenced by get_fresh_session
+db_session_maker = sessionmaker(
+    bind=engine,
+    expire_on_commit=False,
     class_=AsyncSession,
     future=True
 )

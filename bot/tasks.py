@@ -4,7 +4,6 @@ import time
 from asyncio import CancelledError
 from .config import bot
 from .utils import update_member_count_channel
-from .database import get_server_config, cleanup_db
 
 logger = logging.getLogger(__name__)
 

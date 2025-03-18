@@ -1,8 +1,13 @@
-import disnake
+"""
+Utility functions for the Discord bot.
+This module provides helper functions for various bot operations,
+particularly focused on member count handling and role management.
+"""
+import asyncio
 import logging
+import disnake
 from .config import bot
 from .database import get_server_config
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +35,7 @@ async def get_roles_by_ids(guild: disnake.Guild, role_ids: list[int]) -> list[di
             logger.error(f"Role with ID {role_id} not found in guild {guild.name}")
     return roles
 
-async def get_human_member_count(guild: disnake.Guild, force_refresh=False):
+async def get_human_member_count(guild: disnake.Guild, force_refresh: bool = False) -> int:
     """
     Get the human member count for a guild, either from cache or by counting.
     
@@ -94,7 +99,7 @@ async def get_human_member_count(guild: disnake.Guild, force_refresh=False):
     # If we already have a count, just return it
     return member_counts[guild_id]["human_count"]
 
-def increment_member_count(guild_id):
+def increment_member_count(guild_id: int) -> None:
     """
     Increment the human member count for a guild by 1.
     
@@ -106,7 +111,7 @@ def increment_member_count(guild_id):
         logger.info(f"Incremented human member count for guild {guild_id} to {member_counts[guild_id]['human_count']}")
     # If we don't have a count yet, we'll initialize it on the next update
 
-def decrement_member_count(guild_id):
+def decrement_member_count(guild_id: int) -> None:
     """
     Decrement the human member count for a guild by 1.
     
@@ -118,14 +123,17 @@ def decrement_member_count(guild_id):
         logger.info(f"Decremented human member count for guild {guild_id} to {member_counts[guild_id]['human_count']}")
     # If we don't have a count yet, we'll initialize it on the next update
 
-async def update_member_count_channel(guild: disnake.Guild, force_refresh=False):
+async def update_member_count_channel(guild: disnake.Guild, force_refresh: bool = False) -> bool:
     """
     Updates the member count channel name to show the total number of human members in the server.
     Excludes bots from the count.
     
     Args:
-        guild: The guild to update the member count for
-        force_refresh: Whether to force a full count refresh
+        guild: The guild to update the member count channel for
+        force_refresh: Whether to force a full count refresh even if we have cached data
+        
+    Returns:
+        True if the update was successful, False otherwise
     """
     try:
         # Check if event loop is closed
@@ -133,11 +141,11 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
             loop = asyncio.get_running_loop()
             if loop.is_closed():
                 logger.warning(f"Event loop is closed when updating member count for guild {guild.name}")
-                return
+                return False
         except RuntimeError:
             # No event loop running
             logger.warning(f"No event loop running when updating member count for guild {guild.name}")
-            return
+            return False
         
         # Get the member count channel ID from the database
         server_config = None
@@ -155,20 +163,20 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
                 member_count_channel_id = server_config.get("member_count_channel_id")
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting server config for guild {guild.id}")
-            return
+            return False
         except Exception as db_error:
             logger.error(f"Error getting server config for guild {guild.id}: {db_error}")
-            return
+            return False
         
         # If we don't have a channel ID, log and return
         if not member_count_channel_id:
             logger.debug(f"No member count channel configured for guild {guild.name}")
-            return
+            return False
         
         channel = guild.get_channel(member_count_channel_id)
         if not channel:
             logger.error(f"Member count channel with ID {member_count_channel_id} not found in guild {guild.name}")
-            return
+            return False
         
         # Get the human member count with a timeout
         try:
@@ -179,21 +187,21 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
             human_count = await asyncio.wait_for(count_members(), timeout=10.0)
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting human member count for guild {guild.name}")
-            return
+            return False
         except Exception as e:
             logger.error(f"Error getting human member count for guild {guild.name}: {e}")
-            return
+            return False
         
         # Ensure the bot has the permissions to update the channel
         bot_member = guild.get_member(bot.user.id)
         if not bot_member:
             logger.error(f"Bot member not found in guild {guild.name}")
-            return
+            return False
             
         permissions = channel.permissions_for(bot_member)
         if not permissions.manage_channels:
             logger.warning(f"Bot doesn't have permission to manage channels in {guild.name}")
-            return
+            return False
             
         # Update the channel name
         new_name = f"Members: {human_count}"
@@ -206,11 +214,16 @@ async def update_member_count_channel(guild: disnake.Guild, force_refresh=False)
                     
                 await asyncio.wait_for(edit_channel(), timeout=10.0)
                 logger.info(f"Updated member count channel in {guild.name} to '{new_name}'")
+                return True
             except asyncio.TimeoutError:
                 logger.error(f"Timeout updating member count channel in {guild.name}")
+                return False
             except Exception as e:
                 logger.error(f"Error updating member count channel in {guild.name}: {e}")
+                return False
         else:
             logger.info(f"Member count channel in {guild.name} already up to date: '{new_name}'")
+            return True
     except Exception as e:
-        logger.error(f"Unexpected error in update_member_count_channel for {guild.name}: {e}", exc_info=True) 
+        logger.error(f"Unexpected error in update_member_count_channel for {guild.name}: {e}", exc_info=True)
+        return False 
